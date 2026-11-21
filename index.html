@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>のぞき箱</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Zen+Kaku+Gothic+New:wght@500;700&display=swap" rel="stylesheet">
+<style>
+/* Layout idea: the whole viewport is the glass front of a shadow box; the UI is a few paper labels stuck on that glass. */
+:root {
+  color-scheme: dark;
+  --ink: #0e1026;
+  --wall: #2a2f6b;
+  --paper: #f3ead7;
+  --coral: #ff6b4a;
+  --teal: #2fb8a6;
+  --sun: #f2b63c;
+  --display: "Dela Gothic One", "Hiragino Kaku Gothic StdN", "Yu Gothic", sans-serif;
+  --body: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", "Noto Sans JP", sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--ink);
+  color: var(--ink);
+  font-family: var(--body);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow: hidden;
+  -webkit-user-select: none; user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+#stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+#cam { position: fixed; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
+
+.label {
+  background: var(--paper);
+  border: 2px solid var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+  border-radius: 4px;
+}
+#brand {
+  position: fixed; top: 16px; left: 16px;
+  padding: 8px 14px 9px;
+  transform: rotate(-2deg);
+  max-width: calc(100% - 32px);
+}
+#brand h1 {
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: 22px;
+  letter-spacing: 0.06em;
+  line-height: 1.2;
+}
+#brand p { margin: 2px 0 0; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; }
+
+#dock {
+  position: fixed; left: 16px; right: 16px; bottom: 16px;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 10px;
+  pointer-events: none;
+}
+#dock > * { pointer-events: auto; }
+#status {
+  margin: 0; padding: 6px 12px;
+  font-size: 12px; font-weight: 700;
+  max-width: min(100%, 46ch);
+  text-wrap: balance;
+}
+.row { display: flex; flex-wrap: wrap; gap: 8px; }
+button {
+  font: inherit; font-weight: 700; color: var(--ink);
+  min-height: 44px; padding: 0 14px;
+  background: var(--paper);
+  border: 2px solid var(--ink);
+  border-radius: 4px;
+  box-shadow: 3px 3px 0 var(--ink);
+  cursor: pointer;
+}
+button:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--ink); }
+button[aria-pressed="true"] { background: var(--coral); }
+button:focus-visible, input:focus-visible { outline: 3px solid var(--sun); outline-offset: 2px; }
+
+#settings {
+  padding: 12px 14px 14px;
+  width: min(100%, 340px);
+  display: grid; gap: 10px;
+}
+#settings[hidden] { display: none; }
+#settings h2 { margin: 0; font-size: 13px; letter-spacing: 0.08em; }
+.field { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: baseline; }
+.field label { font-size: 12px; font-weight: 700; }
+.field output { font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.field input[type="range"] { grid-column: 1 / -1; width: 100%; accent-color: var(--coral); height: 28px; margin: 0; }
+.checks { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; font-weight: 700; }
+.checks label { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; }
+.checks input { accent-color: var(--coral); width: 16px; height: 16px; margin: 0; }
+.note { margin: 0; font-size: 11px; font-weight: 500; }
+
+#reveal {
+  position: fixed; right: 12px; bottom: 12px;
+  min-height: 44px; width: 44px; padding: 0;
+  opacity: 0.35; display: none;
+}
+body.bare #brand, body.bare #dock { display: none; }
+body.bare #reveal { display: block; }
+
+@media (max-width: 420px) {
+  #brand h1 { font-size: 19px; }
+  button { padding: 0 11px; }
+}
+</style>
+</head>
+<body>
+<canvas id="stage" aria-label="箱の中に立つキャラクター。視点を動かすと奥行きが変わって見える"></canvas>
+<video id="cam" playsinline muted></video>
+
+<header id="brand" class="label">
+  <h1>のぞき箱</h1>
+  <p>画面の奥に、箱がある。</p>
+</header>
+
+<div id="dock">
+  <section id="settings" class="label" hidden aria-label="調整">
+    <h2>調整</h2>
+    <div class="field">
+      <label for="set-height">表示部分の高さ（定規で測る）</label><output id="out-height" for="set-height"></output>
+      <input id="set-height" type="range" min="4" max="40" step="0.1">
+    </div>
+    <div class="field">
+      <label for="set-dist">目までの距離（ドラッグ・傾き用）</label><output id="out-dist" for="set-dist"></output>
+      <input id="set-dist" type="range" min="15" max="90" step="1">
+    </div>
+    <div class="field">
+      <label for="set-depth">箱の奥行き</label><output id="out-depth" for="set-depth"></output>
+      <input id="set-depth" type="range" min="0.4" max="2.2" step="0.05">
+    </div>
+    <div class="field">
+      <label for="set-fov">カメラの画角（距離の表示が実測と合うまで）</label><output id="out-fov" for="set-fov"></output>
+      <input id="set-fov" type="range" min="45" max="95" step="1">
+    </div>
+    <div class="checks">
+      <label for="set-flipx"><input id="set-flipx" type="checkbox">左右を反転</label>
+      <label for="set-flipy"><input id="set-flipy" type="checkbox">上下を反転</label>
+    </div>
+    <p class="note">高さと距離が実物と合うほど、箱が本物に見えます。</p>
+  </section>
+
+  <p id="status" class="label" role="status" aria-live="polite">読み込み中…</p>
+
+  <div class="row" role="group" aria-label="視点の動かし方">
+    <button id="mode-pointer" type="button" aria-pressed="true">ドラッグ</button>
+    <button id="mode-face" type="button" aria-pressed="false">カメラで顔を追う</button>
+    <button id="mode-tilt" type="button" aria-pressed="false">端末の傾き</button>
+  </div>
+  <div class="row">
+    <button id="recenter" type="button">正面を合わせる</button>
+    <button id="toggle-settings" type="button" aria-expanded="false" aria-controls="settings">調整</button>
+    <button id="fullscreen" type="button">全画面</button>
+    <button id="hide" type="button">UIを隠す</button>
+  </div>
+</div>
+<button id="reveal" type="button" aria-label="UIを表示">●</button>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var $ = function (id) { return document.getElementById(id); };
+  var statusEl = $('status');
+  function setStatus(text) { if (statusEl.textContent !== text) statusEl.textContent = text; }
+
+  if (!window.THREE) {
+    setStatus('描画ライブラリを読み込めませんでした。通信環境を確認して、ページを読み込み直してください。');
+    return;
+  }
+  var T = window.THREE;
+
+  // ---------- MediaPipe (loaded only when the camera mode starts) ----------
+  var MP_VERSION = '0.10.3';
+  var MP_BUNDLE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@' + MP_VERSION + '/vision_bundle.mjs';
+  var MP_WASM = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@' + MP_VERSION + '/wasm';
+  var MP_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+  var IPD_CM = 6.3; // average adult interpupillary distance
+
+  // ---------- settings ----------
+  var coarse = window.matchMedia('(pointer: coarse)').matches;
+  var smallScreen = Math.min(screen.width, screen.height) < 600;
+  var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var S = {
+    cmPerPx: coarse ? (smallScreen ? 0.0163 : 0.0192) : 0.0215, // physical size of one CSS pixel
+    dist: coarse ? (smallScreen ? 32 : 45) : 55,                 // assumed eye distance, cm
+    depth: 1.0,                                                  // box depth multiplier
+    fov: coarse ? 70 : 63,                                       // camera field of view along its long side, degrees
+    flipX: false,
+    flipY: false
+  };
+  var STORE_KEY = 'nozokibako-settings';
+  function adopt(data) {
+    if (!data || typeof data !== 'object') return;
+    ['cmPerPx', 'dist', 'depth', 'fov'].forEach(function (k) {
+      if (typeof data[k] === 'number' && isFinite(data[k]) && data[k] > 0) S[k] = data[k];
+    });
+    ['flipX', 'flipY'].forEach(function (k) { if (typeof data[k] === 'boolean') S[k] = data[k]; });
+  }
+  function save() { try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch (e) { /* storage unavailable */ } }
+  try { adopt(JSON.parse(localStorage.getItem(STORE_KEY) || 'null')); } catch (e) { /* storage unavailable */ }
+
+  // ---------- pure maths (also used by tests) ----------
+  // Asymmetric frustum for an eye at (ex, ey, ez) looking through a W x H window centred on the origin at z = 0.
+  function offAxisFrustum(ex, ey, ez, W, H, near) {
+    var k = near / ez;
+    return { left: (-W / 2 - ex) * k, right: (W / 2 - ex) * k, bottom: (-H / 2 - ey) * k, top: (H / 2 - ey) * k };
+  }
+  // Eye midpoint in camera-centred screen axes (x right, y up, z toward the viewer), in cm,
+  // from the two iris-centre landmarks (normalised image coordinates).
+  function eyeFromIrises(a, b, vw, vh, fovDeg) {
+    var dx = (a.x - b.x) * vw, dy = (a.y - b.y) * vh, dz = ((a.z || 0) - (b.z || 0)) * vw;
+    var span = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (!(span > 1)) return null;
+    var f = (Math.max(vw, vh) / 2) / Math.tan(fovDeg * Math.PI / 360);
+    var z = f * IPD_CM / span;
+    var u = (a.x + b.x) / 2 * vw, v = (a.y + b.y) / 2 * vh;
+    return { x: -(u - vw / 2) * z / f, y: -(v - vh / 2) * z / f, z: z };
+  }
+  // One Euro filter: steady when still, fast when moving.
+  function OneEuro(minCutoff, beta) {
+    this.minCutoff = minCutoff; this.beta = beta; this.x = null; this.dx = 0;
+  }
+  OneEuro.prototype.step = function (value, dt) {
+    if (this.x === null || !(dt > 0)) { this.x = value; this.dx = 0; return value; }
+    var alpha = function (cutoff) { var tau = 1 / (2 * Math.PI * cutoff); return 1 / (1 + tau / dt); };
+    var rawDx = (value - this.x) / dt;
+    this.dx += alpha(1.0) * (rawDx - this.dx);
+    var a = alpha(this.minCutoff + this.beta * Math.abs(this.dx));
+    this.x += a * (value - this.x);
+    return this.x;
+  };
+  OneEuro.prototype.reset = function () { this.x = null; this.dx = 0; };
+  window.__nozokibako = { offAxisFrustum: offAxisFrustum, eyeFromIrises: eyeFromIrises, OneEuro: OneEuro };
+
+  // ---------- renderer ----------
+  var canvas = $('stage');
+  var renderer;
+  try {
+    renderer = new T.WebGLRenderer({ canvas: canvas, antialias: true });
+  } catch (e) {
+    setStatus('このブラウザではWebGLが使えないため、表示できません。');
+    return;
+  }
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  var scene = new T.Scene();
+  scene.background = new T.Color(0x0e1026);
+  var camera = new T.PerspectiveCamera();
+  scene.add(new T.AmbientLight(0xffffff, 0.5));
+  var sunLight = new T.DirectionalLight(0xffffff, 0.5);
+  sunLight.position.set(0.5, 0.9, 1.0);
+  scene.add(sunLight);
+
+  // ---------- materials ----------
+  var INK = 0x14162e;
+  var ramp = new T.DataTexture(new Uint8Array([120, 190, 255]), 3, 1, T.LuminanceFormat);
+  ramp.minFilter = T.NearestFilter; ramp.magFilter = T.NearestFilter; ramp.generateMipmaps = false; ramp.needsUpdate = true;
+  function toon(hex) { return new T.MeshToonMaterial({ color: hex, gradientMap: ramp }); }
+  function flat(hex, opts) { return new T.MeshBasicMaterial(Object.assign({ color: hex }, opts || {})); }
+  var inkMat = new T.MeshBasicMaterial({ color: 0xf3ead7, side: T.BackSide }); // paper cut-out edge: reads against the dark walls
+  // Inverted-hull outline: a back-face copy of the mesh, slightly larger, in paper colour.
+  function ink(mesh, k) {
+    var hull = new T.Mesh(mesh.geometry, inkMat);
+    if (Array.isArray(k)) hull.scale.set(k[0], k[1], k[2]); else hull.scale.setScalar(k || 1.06);
+    mesh.add(hull);
+    return mesh;
+  }
+  var M = {
+    skin: toon(0xffe1c8), coral: toon(0xff6b4a), teal: toon(0x2fb8a6), cream: toon(0xf6efe0),
+    sun: toon(0xf2b63c), leaf: toon(0x79d05f), wood: toon(0xc98f5a)
+  };
+
+  function cellTexture(draw) {
+    var c = document.createElement('canvas'); c.width = c.height = 256;
+    draw(c.getContext('2d'), 256);
+    var tex = new T.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = T.RepeatWrapping;
+    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    return tex;
+  }
+  var texWall = cellTexture(function (g, n) {
+    g.fillStyle = '#2a2f6b'; g.fillRect(0, 0, n, n);
+    g.strokeStyle = 'rgba(243,234,215,0.7)'; g.lineWidth = 10; g.strokeRect(0, 0, n, n);
+  });
+  var texCeil = cellTexture(function (g, n) {
+    g.fillStyle = '#1f2456'; g.fillRect(0, 0, n, n);
+    g.strokeStyle = 'rgba(243,234,215,0.5)'; g.lineWidth = 10; g.strokeRect(0, 0, n, n);
+  });
+  var texFloor = cellTexture(function (g, n) {
+    var h = n / 2;
+    g.fillStyle = '#efe2c8'; g.fillRect(0, 0, n, n);
+    g.fillStyle = '#d8c39c'; g.fillRect(0, 0, h, h); g.fillRect(h, h, h, h);
+  });
+  var texSky = (function () {
+    var c = document.createElement('canvas'); c.width = 8; c.height = 256;
+    var g = c.getContext('2d'), grad = g.createLinearGradient(0, 0, 0, 256);
+    grad.addColorStop(0, '#5cc3e6'); grad.addColorStop(0.55, '#bfe8ea'); grad.addColorStop(1, '#ffe6ad');
+    g.fillStyle = grad; g.fillRect(0, 0, 8, 256);
+    return new T.CanvasTexture(c);
+  })();
+
+  // ---------- the character (built 1 unit tall, feet at y = 0) ----------
+  function facePatch(geo, mat, dir, r) {
+    var m = new T.Mesh(geo, mat);
+    var d = new T.Vector3(dir[0], dir[1], dir[2]).normalize();
+    m.position.copy(d).multiplyScalar(r);
+    m.rotation.order = 'YXZ';
+    m.rotation.y = Math.atan2(d.x, d.z);
+    m.rotation.x = -Math.asin(d.y);
+    return m;
+  }
+  function buildHero() {
+    var root = new T.Group();
+    var body = new T.Group(); root.add(body);
+
+    [-1, 1].forEach(function (s) {
+      var leg = ink(new T.Mesh(new T.CylinderGeometry(0.034, 0.03, 0.2, 12), M.cream), [1.32, 1.0, 1.32]);
+      leg.position.set(s * 0.062, 0.16, 0); body.add(leg);
+      var shoe = ink(new T.Mesh(new T.SphereGeometry(0.056, 16, 12), M.coral), 1.14);
+      shoe.scale.set(1, 0.62, 1.4); shoe.position.set(s * 0.062, 0.036, 0.022); body.add(shoe);
+    });
+
+    var poncho = ink(new T.Mesh(new T.CylinderGeometry(0.075, 0.2, 0.3, 28), M.coral), [1.06, 1.03, 1.06]);
+    poncho.position.y = 0.4; body.add(poncho);
+    var hem = new T.Mesh(new T.TorusGeometry(0.198, 0.02, 8, 36), M.sun);
+    hem.rotation.x = Math.PI / 2; hem.position.y = 0.262; body.add(hem);
+    var collar = new T.Mesh(new T.TorusGeometry(0.078, 0.022, 8, 24), M.cream);
+    collar.rotation.x = Math.PI / 2; collar.position.y = 0.548; body.add(collar);
+
+    var arms = [-1, 1].map(function (s) {
+      var pivot = new T.Group(); pivot.position.set(s * 0.09, 0.515, 0); pivot.rotation.z = s * 0.55;
+      var arm = ink(new T.Mesh(new T.CylinderGeometry(0.03, 0.026, 0.2, 10), M.cream), [1.36, 1.0, 1.36]);
+      arm.position.y = -0.1; pivot.add(arm);
+      var hand = ink(new T.Mesh(new T.SphereGeometry(0.038, 14, 10), M.skin), 1.2);
+      hand.position.y = -0.215; pivot.add(hand);
+      body.add(pivot);
+      return pivot;
+    });
+
+    var head = new T.Group(); head.position.y = 0.755; head.rotation.order = 'YXZ'; body.add(head);
+    var skull = ink(new T.Mesh(new T.SphereGeometry(0.2, 32, 24), M.skin), 1.05);
+    skull.scale.set(1, 0.94, 0.96); head.add(skull);
+    var hair = ink(new T.Mesh(new T.SphereGeometry(0.213, 32, 20, 0, Math.PI * 2, 0, 1.9), M.teal), 1.05);
+    hair.rotation.x = -0.6; hair.scale.set(1.01, 0.97, 1.0); head.add(hair);
+
+    var sprout = new T.Group(); sprout.position.set(0, 0.185, -0.035); head.add(sprout);
+    var stem = new T.Mesh(new T.CylinderGeometry(0.008, 0.008, 0.08, 6), M.leaf); stem.position.y = 0.04; sprout.add(stem);
+    [-1, 1].forEach(function (s) {
+      var leaf = ink(new T.Mesh(new T.SphereGeometry(0.05, 12, 8), M.leaf), 1.18);
+      leaf.scale.set(1, 0.26, 0.55); leaf.position.set(s * 0.045, 0.088, 0); leaf.rotation.z = s * 0.5; sprout.add(leaf);
+    });
+
+    var eyeMat = flat(0x1a1c3a), shine = flat(0xffffff);
+    var eyes = [-1, 1].map(function (s) {
+      var eye = facePatch(new T.CircleGeometry(0.031, 24), eyeMat, [s * 0.37, -0.03, 0.93], 0.203);
+      eye.scale.set(0.82, 1.15, 1);
+      var glint = new T.Mesh(new T.CircleGeometry(0.0095, 12), shine); glint.position.set(0.009, 0.012, 0.002); eye.add(glint);
+      head.add(eye);
+      return eye;
+    });
+    var blush = flat(0xff6b4a, { transparent: true, opacity: 0.42 });
+    [-1, 1].forEach(function (s) {
+      head.add(facePatch(new T.CircleGeometry(0.024, 16), blush, [s * 0.62, -0.3, 0.72], 0.202));
+    });
+    var mouth = facePatch(new T.TorusGeometry(0.017, 0.0048, 6, 12, Math.PI), eyeMat, [0, -0.36, 0.93], 0.2);
+    mouth.rotation.z = Math.PI; head.add(mouth);
+
+    return { root: root, body: body, head: head, arms: arms, eyes: eyes, sprout: sprout };
+  }
+  var hero = buildHero();
+  scene.add(hero.root);
+  var shadow = new T.Mesh(new T.CircleGeometry(1, 32), flat(INK, { transparent: true, opacity: 0.32, depthWrite: false }));
+  shadow.rotation.x = -Math.PI / 2; scene.add(shadow);
+
+  var stars = [0, 1, 2].map(function () {
+    var s = ink(new T.Mesh(new T.OctahedronGeometry(1, 0), flat(0xf2b63c)), 1.22);
+    scene.add(s); return s;
+  });
+
+  // ---------- the box ----------
+  var room = null, lamp = null, clouds = [];
+  var dims = { W: 1, H: 1, D: 1, u: 1, hero: 1, floor: 0, hx: 0, hz: 0 };
+
+  function quad(points, uvs, shades, map) {
+    var g = new T.BufferGeometry(), pos = [], col = [];
+    points.forEach(function (p) { pos.push(p[0], p[1], p[2]); });
+    shades.forEach(function (s) { col.push(s, s, s); });
+    g.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+    g.setAttribute('uv', new T.Float32BufferAttribute([].concat.apply([], uvs), 2));
+    g.setAttribute('color', new T.Float32BufferAttribute(col, 3));
+    g.setIndex([0, 1, 2, 0, 2, 3]);
+    return new T.Mesh(g, new T.MeshBasicMaterial({ map: map, vertexColors: true, side: T.DoubleSide }));
+  }
+  function box(w, h, d, mat, k) { return ink(new T.Mesh(new T.BoxGeometry(w, h, d), mat), k || 1.08); }
+  function disposeTree(obj) {
+    obj.traverse(function (o) { if (o.geometry) o.geometry.dispose(); });
+    scene.remove(obj);
+  }
+
+  function buildRoom() {
+    if (room) disposeTree(room);
+    room = new T.Group(); scene.add(room); clouds = [];
+
+    var W = window.innerWidth * S.cmPerPx, H = window.innerHeight * S.cmPerPx;
+    var lo = Math.min(W, H), hi = Math.max(W, H);
+    var D = S.depth * (0.6 * lo + 0.4 * hi);
+    var u = lo / 16;                 // furniture scale: 1 on a 16 cm tall tablet
+    var cell = lo / 6;               // one grid square
+    var x = W / 2, y = H / 2, far = 0.5;
+    var nu = W / cell / 2, nv = H / cell / 2, nd = D / cell;
+
+    room.add(quad([[-x, -y, 0], [x, -y, 0], [x, -y, -D], [-x, -y, -D]],
+      [[-nu / 2, 0], [nu / 2, 0], [nu / 2, nd / 2], [-nu / 2, nd / 2]], [1, 1, 0.62, 0.62], texFloor));
+    room.add(quad([[-x, y, 0], [x, y, 0], [x, y, -D], [-x, y, -D]],
+      [[-nu, 0], [nu, 0], [nu, nd], [-nu, nd]], [1, 1, far, far], texCeil));
+    room.add(quad([[-x, -y, 0], [-x, y, 0], [-x, y, -D], [-x, -y, -D]],
+      [[-nv, 0], [nv, 0], [nv, nd], [-nv, nd]], [1, 1, far, far], texWall));
+    room.add(quad([[x, -y, 0], [x, y, 0], [x, y, -D], [x, -y, -D]],
+      [[-nv, 0], [nv, 0], [nv, nd], [-nv, nd]], [1, 1, far, far], texWall));
+
+    // back wall with a round window
+    var wx = -0.18 * W, wy = 0.14 * H, wr = 0.19 * lo;
+    var shape = new T.Shape();
+    shape.moveTo(-x, -y); shape.lineTo(x, -y); shape.lineTo(x, y); shape.lineTo(-x, y); shape.lineTo(-x, -y);
+    var hole = new T.Path(); hole.absarc(wx, wy, wr, 0, Math.PI * 2, true); shape.holes.push(hole);
+    var backGeo = new T.ShapeGeometry(shape, 40), uv = backGeo.attributes.uv;
+    for (var i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) / cell, uv.getY(i) / cell);
+    var back = new T.Mesh(backGeo, new T.MeshBasicMaterial({ map: texWall, color: new T.Color(far + 0.06, far + 0.06, far + 0.06), side: T.DoubleSide }));
+    back.position.z = -D; room.add(back);
+
+    var ring = new T.Mesh(new T.TorusGeometry(wr, wr * 0.09, 10, 48), M.sun);
+    ring.position.set(wx, wy, -D + wr * 0.04); room.add(ring);
+    var barH = new T.Mesh(new T.BoxGeometry(wr * 2, wr * 0.09, wr * 0.09), M.sun); barH.position.set(wx, wy, -D); room.add(barH);
+    var barV = new T.Mesh(new T.BoxGeometry(wr * 0.09, wr * 2, wr * 0.09), M.sun); barV.position.set(wx, wy, -D); room.add(barV);
+
+    // outside the window: sky, sun, hills, clouds at increasing distance
+    var sky = new T.Mesh(new T.PlaneGeometry(900 * u, 600 * u), new T.MeshBasicMaterial({ map: texSky }));
+    sky.position.set(wx, wy, -D - 130 * u); room.add(sky);
+    var sunDisc = new T.Mesh(new T.CircleGeometry(9 * u, 40), flat(0xfff6cf));
+    sunDisc.position.set(wx + 9 * u, wy + 10 * u, -D - 120 * u); room.add(sunDisc);
+    [[0x8fd0bf, 78, -14, 46, 1.9], [0x2f9d90, 44, 10, 30, 2.2]].forEach(function (h) {
+      var hill = new T.Mesh(new T.CircleGeometry(h[3] * u, 48), flat(h[0]));
+      hill.scale.set(h[4], 0.55, 1);
+      hill.position.set(wx + h[2] * u, wy - (h[3] * 0.55 + 4) * u, -D - h[1] * u); room.add(hill);
+    });
+    var cloudMat = flat(0xffffff);
+    [[-10, 9, 34], [14, 14, 58], [-2, 20, 80], [26, 6, 44], [-26, 15, 66]].forEach(function (c) {
+      var g = new T.Group();
+      [[0, 0, 3.2], [3.4, 0.5, 2.4], [-3.2, 0.2, 2.2], [1, 1.8, 2.2]].forEach(function (p) {
+        var puff = new T.Mesh(new T.CircleGeometry(p[2] * u, 20), cloudMat); puff.position.set(p[0] * u, p[1] * u, 0); g.add(puff);
+      });
+      g.position.set(wx + c[0] * u, wy + c[1] * u, -D - c[2] * u);
+      g.userData = { x0: wx, span: 60 * u, speed: (0.6 + c[2] / 90) * u };
+      room.add(g); clouds.push(g);
+    });
+
+    // character placement
+    var heroH = Math.min(0.58 * H, 1.1 * W), hx = 0.05 * W, hz = -0.5 * D;
+    dims = { W: W, H: H, D: D, u: u, hero: heroH, floor: -y, hx: hx, hz: hz };
+    hero.root.scale.setScalar(heroH);
+    hero.root.position.set(hx, -y, hz);
+    shadow.position.set(hx, -y + 0.04 * u, hz);
+    stars.forEach(function (s) { s.scale.setScalar(0.5 * u); });
+
+    // rug
+    var rr = Math.min(0.32 * W, 0.42 * D);
+    [[1, 0x2fb8a6], [0.8, 0x2a2f6b], [0.46, 0x2fb8a6]].forEach(function (r, n) {
+      var disc = new T.Mesh(new T.CircleGeometry(rr * r[0], 48), flat(r[1]));
+      disc.rotation.x = -Math.PI / 2; disc.position.set(hx, -y + (0.01 + n * 0.008) * u, hz); room.add(disc);
+    });
+
+    // crates and a plant in the back right corner
+    var c1 = box(3 * u, 3 * u, 3 * u, M.teal, 1.07); c1.position.set(x - 2.1 * u, -y + 1.5 * u, -D + 2.1 * u); room.add(c1);
+    var c2 = box(2 * u, 2 * u, 2 * u, M.sun, 1.09); c2.position.set(x - 2.3 * u, -y + 4 * u, -D + 2.2 * u); c2.rotation.y = 0.45; room.add(c2);
+    var pot = ink(new T.Mesh(new T.CylinderGeometry(0.7 * u, 0.5 * u, 0.9 * u, 16), M.coral), 1.12);
+    pot.position.set(x - 2.3 * u, -y + 5.45 * u, -D + 2.2 * u); room.add(pot);
+    [-0.5, 0, 0.5].forEach(function (a) {
+      var leaf = ink(new T.Mesh(new T.ConeGeometry(0.42 * u, 1.9 * u, 8), M.leaf), 1.2);
+      leaf.position.set(x - 2.3 * u + a * 0.9 * u, -y + 6.7 * u, -D + 2.2 * u); leaf.rotation.z = -a * 0.7; room.add(leaf);
+    });
+
+    // shelf on the left wall
+    var shelf = box(2.2 * u, 0.32 * u, 3.6 * u, M.wood, 1.06);
+    shelf.position.set(-x + 1.1 * u, -0.12 * H, -0.52 * D); room.add(shelf);
+    var ball = ink(new T.Mesh(new T.SphereGeometry(0.62 * u, 20, 14), M.sun), 1.12);
+    ball.position.set(-x + 1.15 * u, -0.12 * H + 0.78 * u, -0.52 * D - 0.8 * u); room.add(ball);
+    var book = box(0.5 * u, 1.3 * u, 1.0 * u, M.coral, 1.1);
+    book.position.set(-x + 1.0 * u, -0.12 * H + 0.81 * u, -0.52 * D + 0.9 * u); book.rotation.z = 0.12; room.add(book);
+
+    // hanging lamp near the glass
+    lamp = new T.Group(); lamp.position.set(0.27 * W, y, -0.2 * D); room.add(lamp);
+    var cordLen = 0.2 * H;
+    var cord = new T.Mesh(new T.CylinderGeometry(0.06 * u, 0.06 * u, cordLen, 6), flat(INK)); cord.position.y = -cordLen / 2; lamp.add(cord);
+    var shade = ink(new T.Mesh(new T.ConeGeometry(1.5 * u, 1.3 * u, 24), M.sun), 1.08); shade.position.y = -cordLen - 0.65 * u; lamp.add(shade);
+    var bulb = new T.Mesh(new T.SphereGeometry(0.45 * u, 16, 12), flat(0xfff6cf)); bulb.position.y = -cordLen - 1.35 * u; lamp.add(bulb);
+  }
+
+  // ---------- viewpoint ----------
+  var eye = new T.Vector3(0, 0, S.dist);
+  var target = new T.Vector3(0, 0, S.dist);
+  var mode = 'pointer';
+  var lastPointer = -1e9;
+  var NEAR = 1, FAR = 4000;
+
+  function applyCamera() {
+    var ez = Math.max(eye.z, 10);
+    var f = offAxisFrustum(eye.x, eye.y, ez, dims.W, dims.H, NEAR);
+    camera.position.set(eye.x, eye.y, ez);
+    camera.quaternion.set(0, 0, 0, 1);
+    camera.updateMatrixWorld(true);
+    camera.projectionMatrix.makePerspective(f.left, f.right, f.top, f.bottom, NEAR, FAR);
+    camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+  }
+  function setTarget(x, y, z) {
+    target.set(S.flipX ? -x : x, S.flipY ? -y : y, z);
+  }
+
+  // pointer
+  var press = null;
+  function pointerEye(e) {
+    var px = (e.clientX / window.innerWidth) * 2 - 1, py = 1 - (e.clientY / window.innerHeight) * 2;
+    var d = S.dist;
+    setTarget(px * 0.62 * d, py * 0.46 * d, d * (1 - 0.14 * (px * px + py * py)));
+    lastPointer = performance.now();
+  }
+  canvas.addEventListener('pointerdown', function (e) {
+    press = { x: e.clientX, y: e.clientY, t: performance.now() };
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* not capturable */ }
+    if (mode === 'pointer') pointerEye(e);
+  });
+  canvas.addEventListener('pointermove', function (e) {
+    if (mode !== 'pointer') return;
+    if (e.pointerType === 'mouse' || press) pointerEye(e);
+  });
+  function release(e) {
+    if (press && performance.now() - press.t < 320 && Math.hypot(e.clientX - press.x, e.clientY - press.y) < 9) jump();
+    press = null;
+  }
+  canvas.addEventListener('pointerup', release);
+  canvas.addEventListener('pointercancel', function () { press = null; });
+
+  // camera face tracking
+  var video = $('cam');
+  var face = {
+    landmarker: null, stream: null, active: false, lastTime: -1, lastSample: 0, lastSeen: 0, lastReadout: 0,
+    raw: null, offset: new T.Vector2(0, 0), offsetSet: false,
+    fx: new OneEuro(1.0, 0.3), fy: new OneEuro(1.0, 0.3), fz: new OneEuro(0.5, 0.15)
+  };
+  function stopFace() {
+    face.active = false;
+    if (face.stream) { face.stream.getTracks().forEach(function (t) { t.stop(); }); face.stream = null; }
+    video.srcObject = null;
+  }
+  var BLOCKED_NOTE = 'このHTMLを自分のサーバー（https）かlocalhostで開くと使えます。';
+  async function startFace() {
+    setStatus('カメラの許可を待っています…');
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setStatus('このページではカメラを使えません。' + BLOCKED_NOTE); return false;
+    }
+    try {
+      face.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+    } catch (e) {
+      setStatus('カメラを開けませんでした（この画面で禁止されているか、許可されていません）。' + BLOCKED_NOTE); return false;
+    }
+    video.srcObject = face.stream;
+    try { await video.play(); } catch (e) { /* autoplay refused; frames still arrive on some browsers */ }
+    setStatus('顔追跡モデルを読み込み中…（初回は数秒）');
+    try {
+      if (!face.landmarker) {
+        var vision = await import(MP_BUNDLE);
+        var files = await vision.FilesetResolver.forVisionTasks(MP_WASM);
+        face.landmarker = await vision.FaceLandmarker.createFromOptions(files, {
+          baseOptions: { modelAssetPath: MP_MODEL, delegate: 'GPU' }, runningMode: 'VIDEO', numFaces: 1
+        });
+      }
+    } catch (e) {
+      stopFace();
+      setStatus('顔追跡モデルを読み込めませんでした。通信が遮断されている可能性があります。' + BLOCKED_NOTE); return false;
+    }
+    face.fx.reset(); face.fy.reset(); face.fz.reset();
+    face.raw = null; face.lastSeen = performance.now();
+    if (!face.offsetSet) face.offset.set(0, dims.H / 2 + 0.5); // assume the camera sits just above the top edge
+    face.active = true;
+    setStatus('顔を探しています…');
+    return true;
+  }
+  function sampleFace(now) {
+    if (!face.active || video.readyState < 2 || video.currentTime === face.lastTime) return;
+    face.lastTime = video.currentTime;
+    var result;
+    try { result = face.landmarker.detectForVideo(video, now); } catch (e) { return; }
+    var lm = result && result.faceLandmarks && result.faceLandmarks[0];
+    if (!lm) return;
+    var a, b;
+    if (lm.length > 473) { a = lm[468]; b = lm[473]; }
+    else {
+      a = { x: (lm[33].x + lm[133].x) / 2, y: (lm[33].y + lm[133].y) / 2, z: (lm[33].z + lm[133].z) / 2 };
+      b = { x: (lm[362].x + lm[263].x) / 2, y: (lm[362].y + lm[263].y) / 2, z: (lm[362].z + lm[263].z) / 2 };
+    }
+    var p = eyeFromIrises(a, b, video.videoWidth, video.videoHeight, S.fov);
+    if (!p) return;
+    var dt = face.lastSample ? (now - face.lastSample) / 1000 : 0;
+    face.lastSample = now; face.lastSeen = now;
+    var fx = face.fx.step(p.x, dt), fy = face.fy.step(p.y, dt), fz = face.fz.step(p.z, dt);
+    face.raw = { x: S.flipX ? -fx : fx, y: S.flipY ? -fy : fy, z: fz };
+    target.set(face.raw.x + face.offset.x, face.raw.y + face.offset.y, fz);
+    if (now - face.lastReadout > 250) {
+      face.lastReadout = now;
+      setStatus('顔を追跡中 ・ 目までの距離 ' + Math.round(fz) + ' cm');
+    }
+  }
+
+  // device tilt
+  var tilt = { base: null, got: false, on: false };
+  function onTilt(e) {
+    if (e.beta === null || e.gamma === null) return;
+    tilt.got = true;
+    if (!tilt.base) tilt.base = { b: e.beta, g: e.gamma };
+    var wrap = function (v) { return ((v + 540) % 360) - 180; };
+    var lim = function (v) { return Math.max(-45, Math.min(45, v)) * Math.PI / 180; };
+    var db = lim(wrap(e.beta - tilt.base.b)), dg = lim(wrap(e.gamma - tilt.base.g));
+    var d = S.dist, dx = -Math.sin(dg) * d, dy = Math.sin(db) * d, sx = dx, sy = dy;
+    var angle = (screen.orientation && typeof screen.orientation.angle === 'number') ? screen.orientation.angle : (window.orientation || 0);
+    if (angle === 90) { sx = -dy; sy = dx; }
+    else if (angle === 270 || angle === -90) { sx = dy; sy = -dx; }
+    else if (angle === 180) { sx = -dx; sy = -dy; }
+    setTarget(sx, sy, d * Math.cos(db) * Math.cos(dg));
+  }
+  function stopTilt() { if (tilt.on) { window.removeEventListener('deviceorientation', onTilt); tilt.on = false; } }
+  async function startTilt() {
+    if (typeof window.DeviceOrientationEvent === 'undefined') {
+      setStatus('この端末・この画面では傾きセンサーを使えません。' + BLOCKED_NOTE); return false;
+    }
+    if (typeof window.DeviceOrientationEvent.requestPermission === 'function') {
+      try {
+        if ((await window.DeviceOrientationEvent.requestPermission()) !== 'granted') throw new Error('denied');
+      } catch (e) {
+        setStatus('傾きセンサーが許可されませんでした。' + BLOCKED_NOTE); return false;
+      }
+    }
+    tilt.base = null; tilt.got = false; tilt.on = true;
+    window.addEventListener('deviceorientation', onTilt);
+    setStatus('端末を傾けると視点が動きます。');
+    window.setTimeout(function () {
+      if (mode === 'tilt' && !tilt.got) {
+        setMode('pointer');
+        setStatus('傾きセンサーの値が届きません（パソコンか、この画面で禁止されています）。' + BLOCKED_NOTE);
+      }
+    }, 1600);
+    return true;
+  }
+
+  var POINTER_HINT = coarse ? 'ドラッグで視点が動きます。タップでジャンプ。' : 'マウスを動かすと視点が動きます。クリックでジャンプ。';
+  var modeButtons = { pointer: $('mode-pointer'), face: $('mode-face'), tilt: $('mode-tilt') };
+  var switching = false;
+  async function setMode(next) {
+    if (switching) return;
+    switching = true;
+    stopFace(); stopTilt();
+    var ok = true;
+    if (next === 'face') ok = await startFace();
+    else if (next === 'tilt') ok = await startTilt();
+    mode = ok ? next : 'pointer';
+    if (mode === 'pointer') { lastPointer = -1e9; if (ok) setStatus(POINTER_HINT); }
+    Object.keys(modeButtons).forEach(function (k) { modeButtons[k].setAttribute('aria-pressed', String(k === mode)); });
+    $('recenter').disabled = mode === 'pointer';
+    $('recenter').style.opacity = mode === 'pointer' ? '0.45' : '1';
+    switching = false;
+  }
+  Object.keys(modeButtons).forEach(function (k) { modeButtons[k].addEventListener('click', function () { setMode(k); }); });
+
+  $('recenter').addEventListener('click', function () {
+    if (mode === 'face' && face.raw) { face.offset.set(-face.raw.x, -face.raw.y); face.offsetSet = true; }
+    if (mode === 'tilt') tilt.base = null;
+  });
+
+  // ---------- character behaviour ----------
+  var act = { jumpY: 0, jumpV: 0, blinkAt: 2, blink: 0, waveAt: 5, wave: 0, yaw: 0, pitch: 0 };
+  function jump() { if (act.jumpY === 0) act.jumpV = 2.3; }
+  var headPos = new T.Vector3();
+
+  function animate(t, dt) {
+    // jump
+    if (act.jumpV !== 0 || act.jumpY > 0) {
+      act.jumpV -= 9.5 * dt; act.jumpY += act.jumpV * dt;
+      if (act.jumpY <= 0) { act.jumpY = 0; act.jumpV = 0; }
+    }
+    var breathe = reduceMotion ? 0 : Math.sin(t * 2.1);
+    hero.root.position.y = dims.floor + act.jumpY * dims.hero;
+    hero.body.scale.set(1 - breathe * 0.006, 1 + breathe * 0.012, 1 - breathe * 0.006);
+    var sh = 0.2 * dims.hero * (1 - Math.min(act.jumpY, 0.5) * 0.9);
+    shadow.scale.set(sh, sh, 1);
+
+    // look at the viewer
+    hero.head.getWorldPosition(headPos);
+    var dx = eye.x - headPos.x, dy = eye.y - headPos.y, dz = eye.z - headPos.z;
+    var yaw = Math.max(-0.95, Math.min(0.95, Math.atan2(dx, dz)));
+    var pitch = Math.max(-0.5, Math.min(0.5, Math.atan2(dy, Math.hypot(dx, dz))));
+    var k = 1 - Math.exp(-dt * 7);
+    act.yaw += (yaw - act.yaw) * k; act.pitch += (pitch - act.pitch) * k;
+    hero.body.rotation.y = act.yaw * 0.35;
+    hero.head.rotation.y = act.yaw * 0.65;
+    hero.head.rotation.x = -act.pitch;
+    hero.head.rotation.z = reduceMotion ? 0 : Math.sin(t * 0.8) * 0.04;
+    hero.sprout.rotation.z = reduceMotion ? 0 : Math.sin(t * 3.1) * 0.12 + act.jumpV * 0.05;
+
+    // blink
+    if (t > act.blinkAt) { act.blink = 0.14; act.blinkAt = t + 2 + Math.random() * 3.5; }
+    var open = 1;
+    if (act.blink > 0) { act.blink -= dt; open = Math.max(0.08, Math.abs(act.blink - 0.07) / 0.07); }
+    hero.eyes.forEach(function (e) { e.scale.y = 1.15 * open; });
+
+    // wave now and then
+    if (!reduceMotion && t > act.waveAt) { act.wave = 1.7; act.waveAt = t + 8 + Math.random() * 6; }
+    var armGoal = 0.55;
+    if (act.wave > 0) { act.wave -= dt; armGoal = 2.45 + Math.sin(t * 13) * 0.32; }
+    var right = hero.arms[1];
+    right.rotation.z += (armGoal - right.rotation.z) * (1 - Math.exp(-dt * 12));
+    hero.arms[0].rotation.z = -0.55 - (reduceMotion ? 0 : Math.sin(t * 2.1) * 0.04);
+
+    // stars circle the character and pass in front of the glass
+    var st = reduceMotion ? 0.9 : t * 0.55;
+    stars.forEach(function (s, i) {
+      var a = st + i * Math.PI * 2 / 3;
+      s.position.set(
+        dims.hx + Math.cos(a) * Math.min(0.36 * dims.W, 0.9 * dims.hero),
+        dims.floor + dims.hero * (0.58 + 0.13 * Math.sin(st * 2.3 + i * 2)),
+        -0.36 * dims.D + Math.sin(a) * 0.5 * dims.D
+      );
+      s.rotation.set(st * 1.4 + i, st * 1.9 + i, 0);
+    });
+
+    if (lamp) lamp.rotation.z = reduceMotion ? 0 : Math.sin(t * 0.9) * 0.05;
+    if (!reduceMotion) clouds.forEach(function (c) {
+      c.position.x += c.userData.speed * dt;
+      if (c.position.x > c.userData.x0 + c.userData.span) c.position.x = c.userData.x0 - c.userData.span;
+    });
+  }
+
+  // ---------- frame loop ----------
+  var needsRoom = true, prev = performance.now();
+  function resize() {
+    renderer.setSize(window.innerWidth, window.innerHeight, false);
+    needsRoom = true; syncControls();
+  }
+  window.addEventListener('resize', resize);
+
+  function frame(now) {
+    var dt = Math.min((now - prev) / 1000, 0.05), t = now / 1000; prev = now;
+    if (needsRoom) { buildRoom(); needsRoom = false; }
+
+    if (mode === 'face') {
+      sampleFace(now);
+      if (face.active && now - face.lastSeen > 1300) {
+        target.set(0, 0, S.dist);
+        setStatus('顔が見つかりません。カメラに顔が映る位置に戻ってください。');
+      }
+    } else if (mode === 'pointer' && now - lastPointer > 3500) {
+      var d = S.dist;
+      if (reduceMotion) setTarget(0.3 * d, 0.16 * d, d * 0.95);
+      else setTarget(Math.sin(t * 0.5) * 0.44 * d, (0.1 + Math.sin(t * 0.37 + 1) * 0.2) * d, d * 0.96);
+    }
+    eye.lerp(target, 1 - Math.exp(-dt * (mode === 'face' ? 28 : 8)));
+
+    animate(t, dt);
+    applyCamera();
+    renderer.render(scene, camera);
+    window.requestAnimationFrame(frame);
+  }
+
+  // ---------- controls ----------
+  var fields = {
+    height: { el: $('set-height'), out: $('out-height'), get: function () { return window.innerHeight * S.cmPerPx; }, set: function (v) { S.cmPerPx = v / window.innerHeight; }, fmt: function (v) { return v.toFixed(1) + ' cm'; } },
+    dist: { el: $('set-dist'), out: $('out-dist'), get: function () { return S.dist; }, set: function (v) { S.dist = v; }, fmt: function (v) { return Math.round(v) + ' cm'; } },
+    depth: { el: $('set-depth'), out: $('out-depth'), get: function () { return S.depth; }, set: function (v) { S.depth = v; }, fmt: function (v) { return '×' + v.toFixed(2); } },
+    fov: { el: $('set-fov'), out: $('out-fov'), get: function () { return S.fov; }, set: function (v) { S.fov = v; }, fmt: function (v) { return Math.round(v) + '°'; } }
+  };
+  function syncControls() {
+    Object.keys(fields).forEach(function (k) {
+      var f = fields[k], v = f.get();
+      f.el.value = String(v); f.out.textContent = f.fmt(v);
+    });
+    $('set-flipx').checked = S.flipX; $('set-flipy').checked = S.flipY;
+  }
+  Object.keys(fields).forEach(function (k) {
+    var f = fields[k];
+    f.el.addEventListener('input', function () {
+      var v = parseFloat(f.el.value);
+      if (!isFinite(v)) return;
+      f.set(v); f.out.textContent = f.fmt(v); needsRoom = true; save();
+    });
+  });
+  $('set-flipx').addEventListener('change', function (e) { S.flipX = e.target.checked; save(); });
+  $('set-flipy').addEventListener('change', function (e) { S.flipY = e.target.checked; save(); });
+
+  $('toggle-settings').addEventListener('click', function () {
+    var panel = $('settings'), open = panel.hidden;
+    panel.hidden = !open;
+    $('toggle-settings').setAttribute('aria-expanded', String(open));
+  });
+  $('hide').addEventListener('click', function () { document.body.classList.add('bare'); $('reveal').focus(); });
+  $('reveal').addEventListener('click', function () { document.body.classList.remove('bare'); $('hide').focus(); });
+  $('fullscreen').addEventListener('click', function () {
+    var root = document.documentElement;
+    try {
+      if (document.fullscreenElement) { document.exitFullscreen(); return; }
+      var req = root.requestFullscreen || root.webkitRequestFullscreen;
+      if (!req) { setStatus('このブラウザは全画面に対応していません。ホーム画面に追加すると全面表示にできます。'); return; }
+      var p = req.call(root);
+      if (p && p.catch) p.catch(function () { setStatus('この画面では全画面にできません。'); });
+    } catch (e) { setStatus('この画面では全画面にできません。'); }
+  });
+
+  // ---------- boot ----------
+  function start(data) {
+    adopt(data);
+    eye.set(0, 0, S.dist); target.copy(eye);
+    resize();
+    setMode('pointer');
+    window.requestAnimationFrame(frame);
+  }
+  if (window.claude && window.claude.hot && window.claude.hot.snapshot) window.claude.hot.snapshot(function () { return S; });
+  if (window.claude && window.claude.hot && window.claude.hot.ready) window.claude.hot.ready(start);
+  else start((window.claude && window.claude.hot && window.claude.hot.data) || {});
+})();
+</script>
+</body>
+</html>
