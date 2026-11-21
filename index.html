@@ -218,13 +218,13 @@ body.bare #reveal { display: block; }
     flipX: false,
     flipY: false,
     layout: 'pop',                                               // 'pop': character stands in front of a framed window; 'box': inside the box
-    pop: 0.1,                                                    // how far the stage sits in front of the glass, as a share of the short side
-    lean: coarse ? 15 : 0,                                       // how far the device leans back, degrees; the stage stays upright in the real world
+    pop: 0.03,                                                   // how far the stage sits in front of the glass, as a share of the short side
+    lean: 0,                                                     // how far the device leans back, degrees; the stage stays upright in the real world
     gain: 1,                                                     // parallax exaggeration
     anaglyph: false,
-    autoLean: coarse                                             // read the lean angle from the gravity sensor (portrait)
+    autoLean: false                                              // read the lean angle from the gravity sensor (portrait)
   };
-  var STORE_KEY = 'nozokibako-settings';
+  var STORE_KEY = 'nozokibako-settings-v3';
   function adopt(data) {
     if (!data || typeof data !== 'object') return;
     ['cmPerPx', 'dist', 'depth', 'fov', 'gain'].forEach(function (k) {
@@ -338,14 +338,6 @@ body.bare #reveal { display: block; }
     return new T.CanvasTexture(c);
   })();
 
-  var texSoft = (function () {
-    var c = document.createElement('canvas'); c.width = 128; c.height = 64;
-    var g = c.getContext('2d'), grad = g.createRadialGradient(64, 32, 2, 64, 32, 62);
-    grad.addColorStop(0, 'rgba(14,16,38,0.62)'); grad.addColorStop(0.6, 'rgba(14,16,38,0.25)'); grad.addColorStop(1, 'rgba(14,16,38,0)');
-    g.setTransform(1, 0, 0, 0.5, 0, 16); g.fillStyle = grad; g.fillRect(0, -32, 128, 128);
-    return new T.CanvasTexture(c);
-  })();
-
   // ---------- the character (built 1 unit tall, feet at y = 0) ----------
   function facePatch(geo, mat, dir, r) {
     var m = new T.Mesh(geo, mat);
@@ -375,7 +367,7 @@ body.bare #reveal { display: block; }
     collar.rotation.x = Math.PI / 2; collar.position.y = 0.548; body.add(collar);
 
     var arms = [-1, 1].map(function (s) {
-      var pivot = new T.Group(); pivot.position.set(s * 0.09, 0.515, 0); pivot.rotation.z = s * 0.55;
+      var pivot = new T.Group(); pivot.position.set(s * 0.09, 0.515, 0); pivot.rotation.z = s * 0.8;
       var arm = ink(new T.Mesh(new T.CylinderGeometry(0.03, 0.026, 0.2, 10), M.cream), [1.36, 1.0, 1.36]);
       arm.position.y = -0.1; pivot.add(arm);
       var hand = ink(new T.Mesh(new T.SphereGeometry(0.038, 14, 10), M.skin), 1.2);
@@ -458,18 +450,21 @@ body.bare #reveal { display: block; }
   function buildRoom() {
     if (room) disposeTree(room);
     room = new T.Group(); scene.add(room); clouds = [];
+    pedestal.position.set(0, 0, 0); pedestal.scale.set(1, 1, 1);
     while (pedestal.children.length) { var old = pedestal.children[0]; pedestal.remove(old); if (old.geometry) old.geometry.dispose(); }
 
     // physical screen, cm
     var SW = window.innerWidth * S.cmPerPx, SH = window.innerHeight * S.cmPerPx;
     var sLo = Math.min(SW, SH), portrait = SH >= SW, pop = S.layout === 'pop';
 
-    // 'box': the box fills the screen. 'pop': the box sits behind a drawn picture frame that hugs the top and sides
-    // of the screen. The frame reads as the real front surface, so whatever overlaps it reads as standing outside.
-    var W = SW, H = SH, cx = 0, cy = 0;
-    var m = 0.03 * sLo, bw = 0.07 * sLo;                 // black margin, frame border width
-    var fl = -SW / 2 + m, fr = SW / 2 - m, ft = SH / 2 - m, fb = -SH / 2 + (portrait ? 0.3 : 0.27) * SH;
-    if (pop) { W = fr - fl - 2 * bw; H = ft - fb - 2 * bw; cy = (ft + fb) / 2; }
+    // 'box': the box fills the screen. 'pop': the box sits behind an opening in a black frame, and the opening is
+    // made a little smaller than the character, so the top of the head and the hands overlap the frame.
+    var W = SW, H = SH, cx = 0, cy = 0, heroPop = 0;
+    if (pop) {
+      H = 0.64 * SH; heroPop = 1.04 * H;                              // crown of the head and the sprout clear the top edge
+      W = Math.max(0.5 * SW, Math.min(0.82 * SW, 0.7 * heroPop));     // room shows on both sides; the hands come close to the side edges
+      cy = 0.02 * SH;
+    }
     var inner = new T.Group(); inner.position.set(cx, cy, 0); room.add(inner);
 
     var lo = Math.min(W, H), hi = Math.max(W, H);
@@ -562,51 +557,41 @@ body.bare #reveal { display: block; }
     scene.background.set(pop ? 0x000000 : 0x0e1026);
     document.body.style.background = pop ? '#000' : '';
     if (pop) {
-      // In the glass plane: black outside the frame, the paper frame itself, and a darker bevel round the opening.
-      // Together they hide everything behind the glass except through the opening.
-      var ringShape = function (ox, oy, ow, oh, orad, ix, iy, iw, ih, irad) {
-        var sh = new T.Shape(); roundedRect(sh, ox, oy, ow, oh, orad);
-        var hl = new T.Path(); roundedRect(hl, ix, iy, iw, ih, irad); sh.holes.push(hl);
-        return new T.ShapeGeometry(sh, 12);
-      };
-      var bx = SW * 1.5, by = SH * 1.5, fw = fr - fl, fh = ft - fb, ro = 0.07 * sLo, ri = 0.025 * sLo, bv = 0.22 * bw;
-      var outside = new T.Mesh(ringShape(-bx, -by, 2 * bx, 2 * by, 0.01, fl, fb, fw, fh, ro), flat(0x000000));
-      outside.position.z = -0.012; room.add(outside);
-      var frame = new T.Mesh(ringShape(fl, fb, fw, fh, ro, cx - x, cy - y, W, H, ri), flat(0xf3ead7));
-      frame.position.z = -0.008; room.add(frame);
-      var bevel = new T.Mesh(ringShape(cx - x - bv, cy - y - bv, W + 2 * bv, H + 2 * bv, ri + bv, cx - x, cy - y, W, H, ri), flat(0xc9b891));
-      bevel.position.z = -0.004; room.add(bevel);
+      // black frame in the glass plane: hides everything behind the glass except through the opening
+      var maskShape = new T.Shape(), bx = SW * 1.5, by = SH * 1.5;
+      maskShape.moveTo(-bx, -by); maskShape.lineTo(bx, -by); maskShape.lineTo(bx, by); maskShape.lineTo(-bx, by); maskShape.lineTo(-bx, -by);
+      var opening = new T.Path(); roundedRect(opening, cx - x, cy - y, W, H, 0.04 * sLo); maskShape.holes.push(opening);
+      var maskMesh = new T.Mesh(new T.ShapeGeometry(maskShape, 12), flat(0x000000));
+      maskMesh.position.z = -0.01; room.add(maskMesh);
 
-      // pedestal in front of the glass, standing just below the frame so the legs cross the frame's bottom bar
-      pr = Math.min(0.27 * SW, 0.2 * SH);
-      var ph = 0.3 * pr, leanRad = S.lean * Math.PI / 180;
-      heroH = Math.min(0.5 * SH, 1.25 * SW);
-      zc = 0.8 * pr + S.pop * sLo;
-      // as low as it can go while the pedestal's front edge still fits on screen for an eye about 19 degrees above the screen normal
-      var fz = zc + pr, lowest = -(SH / 2 * (1 - fz / S.dist) - 0.35 * fz) + ph + pr * Math.sin(leanRad);
-      top = Math.min(fb + 0.3 * bw, Math.max(fb - 0.12 * SH, lowest));
+      // The character stands on the room's floor at the opening, its whole body just in front of the glass,
+      // so every part that reaches past the opening is drawn over the frame instead of being cut by it.
+      var leanRad = S.lean * Math.PI / 180, floorY = cy - y;
+      heroH = heroPop;
+      zc = 0.22 * heroH + S.pop * sLo;
+      top = floorY;
+      stage.position.set(0.045 * heroH, floorY, zc);                  // a little off centre: the waving hand rests over the frame
+      stage.rotation.x = leanRad;
 
-      // soft shadow the pedestal and character throw on the frame's bottom bar
-      var occ = new T.Mesh(new T.PlaneGeometry(3.1 * pr, 2.6 * bw), new T.MeshBasicMaterial({ map: texSoft, transparent: true, depthWrite: false }));
-      occ.position.set(0, fb + 0.35 * bw, 0.004); room.add(occ);
-      stage.position.set(0, top, zc);
-      stage.rotation.x = leanRad; // local up stays vertical in the room when the device leans back
+      // round mat under the feet: half inside the room, half out over the frame
+      pr = 0.42 * W;
+      var zf = 1.45 * zc, th = 0.012 * sLo, lift = 0.006 * sLo;
+      pedestal.position.set(0, 0, -zc); pedestal.scale.set(1, 1, zf / pr);
+      var base = ink(new T.Mesh(new T.CylinderGeometry(pr, pr, th, 56), M.teal), [1.03, 1.8, 1.03]);
+      base.position.y = lift - th / 2; pedestal.add(base);
+      [[0.84, 0xf6efe0, 1], [0.6, 0x2fb8a6, 2], [0.46, 0xf6efe0, 3]].forEach(function (ring) {
+        var disc = new T.Mesh(new T.CircleGeometry(pr * ring[0], 56), flat(ring[1]));
+        disc.rotation.x = -Math.PI / 2; disc.position.y = lift + ring[2] * 0.0015 * sLo; pedestal.add(disc);
+      });
+      shadow.position.set(0, lift + 0.008 * sLo, 0);
 
       // How far the eye may move before something in front of the glass would be cut by the real screen edge.
       // Past that the view is eased to a stop: a cut-off object is what breaks the illusion.
-      var d = S.dist, headZ = zc + 0.755 * heroH * Math.sin(leanRad), headTop = top + heroH * Math.cos(leanRad);
-      var frontZ = zc + pr, baseY = top - ph - pr * Math.sin(leanRad);
+      var d = S.dist, sinL = Math.sin(leanRad), cosL = Math.cos(leanRad);
       var reach = function (edge, half, z) { return (edge * (d - z) - half * d) / z; };
-      lim.x = Math.max(2, 0.88 * Math.min(reach(SW / 2, pr * 1.06, zc), reach(SW / 2, 0.27 * heroH, headZ)));
-      lim.yUp = Math.max(2, reach(SH / 2, -baseY, frontZ));
-      lim.yDown = Math.max(2, reach(SH / 2, headTop, Math.max(headZ, 0.5)));
-      var base = ink(new T.Mesh(new T.CylinderGeometry(pr, pr * 1.05, ph, 56), M.teal), [1.035, 1.1, 1.035]);
-      base.position.y = -ph / 2; pedestal.add(base);
-      [[0.9, 0xf6efe0, 0.004], [0.62, 0x2fb8a6, 0.008], [0.5, 0xf6efe0, 0.012]].forEach(function (d) {
-        var disc = new T.Mesh(new T.CircleGeometry(pr * d[0], 56), flat(d[1]));
-        disc.rotation.x = -Math.PI / 2; disc.position.y = pr * d[2]; pedestal.add(disc);
-      });
-      shadow.position.set(0, pr * 0.016, 0);
+      lim.x = Math.max(2, 0.88 * Math.min(reach(SW / 2, 0.3 * heroH, zc + 0.5 * heroH * sinL), reach(SW / 2, pr, Math.max(zf * 0.5, 0.5))));
+      lim.yUp = Math.max(2, reach(SH / 2, -(floorY - th), zf));
+      lim.yDown = Math.max(2, reach(SH / 2, floorY + 1.06 * heroH * cosL, zc + 1.06 * heroH * sinL));
     } else {
       heroH = Math.min(0.58 * H, 1.1 * W);
       stage.position.set(hx, -y, hz);
@@ -878,12 +863,12 @@ body.bare #reveal { display: block; }
 
     // wave now and then
     if (!reduceMotion && t > act.waveAt) { act.wave = 1.7; act.waveAt = t + 8 + Math.random() * 6; }
-    var armGoal = 0.55;
+    var armGoal = 0.8;
     if (act.wave > 0) { act.wave -= dt; armGoal = 2.45 + Math.sin(t * 13) * 0.32; }
     var right = hero.arms[1];
     right.rotation.z += (armGoal - right.rotation.z) * (1 - Math.exp(-dt * 12));
     right.rotation.x += ((act.wave > 0 ? 0.75 : 0) - right.rotation.x) * (1 - Math.exp(-dt * 10)); // the waving arm reaches toward the viewer
-    hero.arms[0].rotation.z = -0.55 - (reduceMotion ? 0 : Math.sin(t * 2.1) * 0.04);
+    hero.arms[0].rotation.z = -0.8 - (reduceMotion ? 0 : Math.sin(t * 2.1) * 0.04);
 
     // stars: in the box they circle the character; in the pop layout they come out through the window,
     // swing wide in front of the glass (past the window's edge) and go back in
@@ -893,7 +878,7 @@ body.bare #reveal { display: block; }
       if (dims.pop) {
         var P = dims.portal, k = Math.max(0, Math.min(1, (sn + 0.25) / 1.25)); k = k * k * (3 - 2 * k);
         var rx = 0.36 * P.W + (Math.min(0.46 * dims.W, 0.7 * P.W) - 0.36 * P.W) * k;
-        var yBack = P.cy - 0.12 * P.H, yFront = dims.top + 0.3 * dims.hero;
+        var yBack = P.cy - 0.12 * P.H, yFront = dims.top + 0.4 * dims.hero;
         s.position.set(
           P.cx + cs * rx,
           yBack + (yFront - yBack) * k + 0.03 * dims.hero * Math.sin(st * 2.3 + i * 2),
