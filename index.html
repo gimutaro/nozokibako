@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
 <title>のぞき箱</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -103,7 +106,8 @@ button:focus-visible, input:focus-visible { outline: 3px solid var(--sun); outli
 #reveal {
   position: fixed; right: 12px; bottom: 12px;
   min-height: 44px; width: 44px; padding: 0;
-  opacity: 0.35; display: none;
+  opacity: 0.2; display: none;
+  background: transparent; border-color: var(--paper); color: var(--paper); box-shadow: none;
 }
 body.bare #brand, body.bare #dock { display: none; }
 body.bare #reveal { display: block; }
@@ -158,6 +162,7 @@ body.bare #reveal { display: block; }
       <label for="set-flipx"><input id="set-flipx" type="checkbox">左右を反転</label>
       <label for="set-flipy"><input id="set-flipy" type="checkbox">上下を反転</label>
       <label for="set-anaglyph"><input id="set-anaglyph" type="checkbox">赤青メガネ用に二重描画</label>
+      <label for="set-autolean"><input id="set-autolean" type="checkbox">倒れ角をセンサーで合わせる（縦持ち）</label>
     </div>
     <p class="note">高さと距離が実物と合うほど、箱が本物に見えます。</p>
   </section>
@@ -213,10 +218,11 @@ body.bare #reveal { display: block; }
     flipX: false,
     flipY: false,
     layout: 'pop',                                               // 'pop': character stands in front of a framed window; 'box': inside the box
-    pop: 0.08,                                                   // how far the stage sits in front of the glass, as a share of the short side
+    pop: 0.1,                                                    // how far the stage sits in front of the glass, as a share of the short side
     lean: coarse ? 15 : 0,                                       // how far the device leans back, degrees; the stage stays upright in the real world
     gain: 1,                                                     // parallax exaggeration
-    anaglyph: false
+    anaglyph: false,
+    autoLean: coarse                                             // read the lean angle from the gravity sensor (portrait)
   };
   var STORE_KEY = 'nozokibako-settings';
   function adopt(data) {
@@ -227,7 +233,7 @@ body.bare #reveal { display: block; }
     ['pop', 'lean'].forEach(function (k) {
       if (typeof data[k] === 'number' && isFinite(data[k]) && data[k] >= 0) S[k] = data[k];
     });
-    ['flipX', 'flipY', 'anaglyph'].forEach(function (k) { if (typeof data[k] === 'boolean') S[k] = data[k]; });
+    ['flipX', 'flipY', 'anaglyph', 'autoLean'].forEach(function (k) { if (typeof data[k] === 'boolean') S[k] = data[k]; });
     if (data.layout === 'pop' || data.layout === 'box') S.layout = data.layout;
   }
   function save() { try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch (e) { /* storage unavailable */ } }
@@ -329,6 +335,14 @@ body.bare #reveal { display: block; }
     var g = c.getContext('2d'), grad = g.createLinearGradient(0, 0, 0, 256);
     grad.addColorStop(0, '#5cc3e6'); grad.addColorStop(0.55, '#bfe8ea'); grad.addColorStop(1, '#ffe6ad');
     g.fillStyle = grad; g.fillRect(0, 0, 8, 256);
+    return new T.CanvasTexture(c);
+  })();
+
+  var texSoft = (function () {
+    var c = document.createElement('canvas'); c.width = 128; c.height = 64;
+    var g = c.getContext('2d'), grad = g.createRadialGradient(64, 32, 2, 64, 32, 62);
+    grad.addColorStop(0, 'rgba(14,16,38,0.62)'); grad.addColorStop(0.6, 'rgba(14,16,38,0.25)'); grad.addColorStop(1, 'rgba(14,16,38,0)');
+    g.setTransform(1, 0, 0, 0.5, 0, 16); g.fillStyle = grad; g.fillRect(0, -32, 128, 128);
     return new T.CanvasTexture(c);
   })();
 
@@ -450,10 +464,12 @@ body.bare #reveal { display: block; }
     var SW = window.innerWidth * S.cmPerPx, SH = window.innerHeight * S.cmPerPx;
     var sLo = Math.min(SW, SH), portrait = SH >= SW, pop = S.layout === 'pop';
 
-    // The box fills the screen ('box'), or sits behind a smaller window surrounded by black ('pop').
-    // The black merges with the bezel, so the window reads as the screen and anything overlapping its edge reads as outside it.
+    // 'box': the box fills the screen. 'pop': the box sits behind a drawn picture frame that hugs the top and sides
+    // of the screen. The frame reads as the real front surface, so whatever overlaps it reads as standing outside.
     var W = SW, H = SH, cx = 0, cy = 0;
-    if (pop) { W = (portrait ? 0.76 : 0.56) * SW; H = (portrait ? 0.46 : 0.56) * SH; cy = (portrait ? 0.16 : 0.14) * SH; }
+    var m = 0.03 * sLo, bw = 0.07 * sLo;                 // black margin, frame border width
+    var fl = -SW / 2 + m, fr = SW / 2 - m, ft = SH / 2 - m, fb = -SH / 2 + (portrait ? 0.3 : 0.27) * SH;
+    if (pop) { W = fr - fl - 2 * bw; H = ft - fb - 2 * bw; cy = (ft + fb) / 2; }
     var inner = new T.Group(); inner.position.set(cx, cy, 0); room.add(inner);
 
     var lo = Math.min(W, H), hi = Math.max(W, H);
@@ -546,19 +562,33 @@ body.bare #reveal { display: block; }
     scene.background.set(pop ? 0x000000 : 0x0e1026);
     document.body.style.background = pop ? '#000' : '';
     if (pop) {
-      // black mask in the glass plane: hides everything behind the glass except through the window
-      var mask = new T.Shape(), bx = SW * 1.5, by = SH * 1.5;
-      mask.moveTo(-bx, -by); mask.lineTo(bx, -by); mask.lineTo(bx, by); mask.lineTo(-bx, by); mask.lineTo(-bx, -by);
-      var opening = new T.Path(); roundedRect(opening, cx - x, cy - y, W, H, 0.05 * sLo); mask.holes.push(opening);
-      var maskMesh = new T.Mesh(new T.ShapeGeometry(mask, 12), flat(0x000000));
-      maskMesh.position.z = -0.01; room.add(maskMesh);
+      // In the glass plane: black outside the frame, the paper frame itself, and a darker bevel round the opening.
+      // Together they hide everything behind the glass except through the opening.
+      var ringShape = function (ox, oy, ow, oh, orad, ix, iy, iw, ih, irad) {
+        var sh = new T.Shape(); roundedRect(sh, ox, oy, ow, oh, orad);
+        var hl = new T.Path(); roundedRect(hl, ix, iy, iw, ih, irad); sh.holes.push(hl);
+        return new T.ShapeGeometry(sh, 12);
+      };
+      var bx = SW * 1.5, by = SH * 1.5, fw = fr - fl, fh = ft - fb, ro = 0.07 * sLo, ri = 0.025 * sLo, bv = 0.22 * bw;
+      var outside = new T.Mesh(ringShape(-bx, -by, 2 * bx, 2 * by, 0.01, fl, fb, fw, fh, ro), flat(0x000000));
+      outside.position.z = -0.012; room.add(outside);
+      var frame = new T.Mesh(ringShape(fl, fb, fw, fh, ro, cx - x, cy - y, W, H, ri), flat(0xf3ead7));
+      frame.position.z = -0.008; room.add(frame);
+      var bevel = new T.Mesh(ringShape(cx - x - bv, cy - y - bv, W + 2 * bv, H + 2 * bv, ri + bv, cx - x, cy - y, W, H, ri), flat(0xc9b891));
+      bevel.position.z = -0.004; room.add(bevel);
 
-      // pedestal entirely in front of the glass, overlapping the window's bottom edge
-      pr = Math.min(0.24 * SW, 0.2 * SH);
-      var ph = 0.22 * pr, leanRad = S.lean * Math.PI / 180;
-      heroH = Math.min(0.46 * SH, 1.0 * SW);
-      top = -SH / 2 + 0.24 * SH + ph;
-      zc = pr + 0.6 * ph + S.pop * sLo;
+      // pedestal in front of the glass, standing just below the frame so the legs cross the frame's bottom bar
+      pr = Math.min(0.27 * SW, 0.2 * SH);
+      var ph = 0.3 * pr, leanRad = S.lean * Math.PI / 180;
+      heroH = Math.min(0.5 * SH, 1.25 * SW);
+      zc = 0.8 * pr + S.pop * sLo;
+      // as low as it can go while the pedestal's front edge still fits on screen for an eye about 19 degrees above the screen normal
+      var fz = zc + pr, lowest = -(SH / 2 * (1 - fz / S.dist) - 0.35 * fz) + ph + pr * Math.sin(leanRad);
+      top = Math.min(fb + 0.3 * bw, Math.max(fb - 0.12 * SH, lowest));
+
+      // soft shadow the pedestal and character throw on the frame's bottom bar
+      var occ = new T.Mesh(new T.PlaneGeometry(3.1 * pr, 2.6 * bw), new T.MeshBasicMaterial({ map: texSoft, transparent: true, depthWrite: false }));
+      occ.position.set(0, fb + 0.35 * bw, 0.004); room.add(occ);
       stage.position.set(0, top, zc);
       stage.rotation.x = leanRad; // local up stays vertical in the room when the device leans back
 
@@ -634,7 +664,7 @@ body.bare #reveal { display: block; }
   function pointerEye(e) {
     var px = (e.clientX / window.innerWidth) * 2 - 1, py = 1 - (e.clientY / window.innerHeight) * 2;
     var d = S.dist;
-    var L = dims.lim, rx = Math.min(0.62 * d, L.x), ry = Math.min(0.46 * d, py > 0 ? L.yUp : L.yDown);
+    var L = dims.lim, rx = Math.min(0.62 * d, L.x), ry = py > 0 ? Math.min(0.46 * d, L.yUp) : Math.min(dims.pop ? 0.2 * d : 0.46 * d, L.yDown);
     setTarget(px * rx, py * ry, d * (1 - 0.14 * (px * px + py * py)));
     lastPointer = performance.now();
   }
@@ -725,6 +755,26 @@ body.bare #reveal { display: block; }
     }
   }
 
+  // gravity: read how far the device leans back, so the stage can stay upright in the room
+  var gravity = { on: false, lean: null };
+  function onGravity(e) {
+    var angle = (screen.orientation && typeof screen.orientation.angle === 'number') ? screen.orientation.angle : (window.orientation || 0);
+    if (e.beta === null || angle !== 0) return;         // portrait only: beta is 90 when upright and falls as the top tips away
+    var v = 90 - e.beta;
+    if (v < -15 || v > 70) return;                       // lying flat or tipped forward: keep the last value
+    v = Math.max(0, Math.min(60, v));
+    gravity.lean = gravity.lean === null ? v : gravity.lean + (v - gravity.lean) * 0.1;
+  }
+  function listenGravity() {
+    if (gravity.on || typeof window.DeviceOrientationEvent === 'undefined') return;
+    window.addEventListener('deviceorientation', onGravity); gravity.on = true;
+  }
+  async function motionPermission() {
+    if (typeof window.DeviceOrientationEvent === 'undefined') return false;
+    if (typeof window.DeviceOrientationEvent.requestPermission !== 'function') return true;
+    try { return (await window.DeviceOrientationEvent.requestPermission()) === 'granted'; } catch (e) { return false; }
+  }
+
   // device tilt
   var tilt = { base: null, got: false, on: false };
   function onTilt(e) {
@@ -753,6 +803,7 @@ body.bare #reveal { display: block; }
         setStatus('傾きセンサーが許可されませんでした。' + BLOCKED_NOTE); return false;
       }
     }
+    listenGravity();
     tilt.base = null; tilt.got = false; tilt.on = true;
     window.addEventListener('deviceorientation', onTilt);
     setStatus('端末を傾けると視点が動きます。');
@@ -773,7 +824,7 @@ body.bare #reveal { display: block; }
     switching = true;
     stopFace(); stopTilt();
     var ok = true;
-    if (next === 'face') ok = await startFace();
+    if (next === 'face') { if (S.autoLean && await motionPermission()) listenGravity(); ok = await startFace(); }
     else if (next === 'tilt') ok = await startTilt();
     mode = ok ? next : 'pointer';
     if (mode === 'pointer') { lastPointer = -1e9; if (ok) setStatus(POINTER_HINT); }
@@ -831,6 +882,7 @@ body.bare #reveal { display: block; }
     if (act.wave > 0) { act.wave -= dt; armGoal = 2.45 + Math.sin(t * 13) * 0.32; }
     var right = hero.arms[1];
     right.rotation.z += (armGoal - right.rotation.z) * (1 - Math.exp(-dt * 12));
+    right.rotation.x += ((act.wave > 0 ? 0.75 : 0) - right.rotation.x) * (1 - Math.exp(-dt * 10)); // the waving arm reaches toward the viewer
     hero.arms[0].rotation.z = -0.55 - (reduceMotion ? 0 : Math.sin(t * 2.1) * 0.04);
 
     // stars: in the box they circle the character; in the pop layout they come out through the window,
@@ -874,6 +926,9 @@ body.bare #reveal { display: block; }
 
   function frame(now) {
     var dt = Math.min((now - prev) / 1000, 0.05), t = now / 1000; prev = now;
+    if (S.autoLean && dims.pop && gravity.lean !== null && Math.abs(gravity.lean - S.lean) > 3) {
+      S.lean = Math.round(gravity.lean); needsRoom = true; syncControls();
+    }
     if (needsRoom) { buildRoom(); needsRoom = false; }
 
     if (mode === 'face') {
@@ -909,7 +964,7 @@ body.bare #reveal { display: block; }
       var f = fields[k], v = f.get();
       f.el.value = String(v); f.out.textContent = f.fmt(v);
     });
-    $('set-flipx').checked = S.flipX; $('set-flipy').checked = S.flipY; $('set-anaglyph').checked = S.anaglyph;
+    $('set-flipx').checked = S.flipX; $('set-flipy').checked = S.flipY; $('set-anaglyph').checked = S.anaglyph; $('set-autolean').checked = S.autoLean;
     $('layout').textContent = S.layout === 'pop' ? '見せ方：飛び出し' : '見せ方：箱';
   }
   Object.keys(fields).forEach(function (k) {
@@ -923,6 +978,10 @@ body.bare #reveal { display: block; }
   $('set-flipx').addEventListener('change', function (e) { S.flipX = e.target.checked; save(); });
   $('set-flipy').addEventListener('change', function (e) { S.flipY = e.target.checked; save(); });
   $('set-anaglyph').addEventListener('change', function (e) { S.anaglyph = e.target.checked; save(); });
+  $('set-autolean').addEventListener('change', async function (e) {
+    S.autoLean = e.target.checked; save();
+    if (S.autoLean && await motionPermission()) listenGravity();
+  });
   $('layout').addEventListener('click', function () {
     S.layout = S.layout === 'pop' ? 'box' : 'pop';
     needsRoom = true; syncControls(); save();
@@ -951,6 +1010,7 @@ body.bare #reveal { display: block; }
     adopt(data);
     eye.set(0, 0, S.dist); target.copy(eye);
     resize();
+    if (S.autoLean && !(window.DeviceOrientationEvent && typeof window.DeviceOrientationEvent.requestPermission === 'function')) listenGravity();
     setMode('pointer');
     window.requestAnimationFrame(frame);
   }
