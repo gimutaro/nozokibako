@@ -119,7 +119,7 @@ body.bare #reveal { display: block; }
 </style>
 </head>
 <body>
-<canvas id="stage" aria-label="画面の手前の台に立つキャラクターと、その奥の箱。視点を動かすと奥行きが変わって見える"></canvas>
+<canvas id="stage" aria-label="黒い枠の奥の部屋を歩くキャラクター。見る角度によって、手や頭が枠の上にかかって見える"></canvas>
 <video id="cam" playsinline muted></video>
 
 <header id="brand" class="label">
@@ -139,14 +139,6 @@ body.bare #reveal { display: block; }
       <input id="set-dist" type="range" min="15" max="90" step="1">
     </div>
     <div class="field">
-      <label for="set-pop">手前への飛び出し量</label><output id="out-pop" for="set-pop"></output>
-      <input id="set-pop" type="range" min="0" max="0.5" step="0.01">
-    </div>
-    <div class="field">
-      <label for="set-lean">端末を後ろに倒している角度</label><output id="out-lean" for="set-lean"></output>
-      <input id="set-lean" type="range" min="0" max="50" step="1">
-    </div>
-    <div class="field">
       <label for="set-gain">視差の強さ（1が実物どおり）</label><output id="out-gain" for="set-gain"></output>
       <input id="set-gain" type="range" min="1" max="2" step="0.05">
     </div>
@@ -162,7 +154,6 @@ body.bare #reveal { display: block; }
       <label for="set-flipx"><input id="set-flipx" type="checkbox">左右を反転</label>
       <label for="set-flipy"><input id="set-flipy" type="checkbox">上下を反転</label>
       <label for="set-anaglyph"><input id="set-anaglyph" type="checkbox">赤青メガネ用に二重描画</label>
-      <label for="set-autolean"><input id="set-autolean" type="checkbox">倒れ角をセンサーで合わせる（縦持ち）</label>
     </div>
     <p class="note">高さと距離が実物と合うほど、箱が本物に見えます。</p>
   </section>
@@ -217,12 +208,9 @@ body.bare #reveal { display: block; }
     fov: coarse ? 70 : 63,                                       // camera field of view along its long side, degrees
     flipX: false,
     flipY: false,
-    layout: 'pop',                                               // 'pop': character stands in front of a framed window; 'box': inside the box
-    pop: 0.03,                                                   // how far the stage sits in front of the glass, as a share of the short side
-    lean: 0,                                                     // how far the device leans back, degrees; the stage stays upright in the real world
+    layout: 'pop',                                               // 'pop': room behind a black frame that never cuts the character; 'box': room fills the screen
     gain: 1,                                                     // parallax exaggeration
-    anaglyph: false,
-    autoLean: false                                              // read the lean angle from the gravity sensor (portrait)
+    anaglyph: false
   };
   var STORE_KEY = 'nozokibako-settings-v3';
   function adopt(data) {
@@ -230,10 +218,7 @@ body.bare #reveal { display: block; }
     ['cmPerPx', 'dist', 'depth', 'fov', 'gain'].forEach(function (k) {
       if (typeof data[k] === 'number' && isFinite(data[k]) && data[k] > 0) S[k] = data[k];
     });
-    ['pop', 'lean'].forEach(function (k) {
-      if (typeof data[k] === 'number' && isFinite(data[k]) && data[k] >= 0) S[k] = data[k];
-    });
-    ['flipX', 'flipY', 'anaglyph', 'autoLean'].forEach(function (k) { if (typeof data[k] === 'boolean') S[k] = data[k]; });
+    ['flipX', 'flipY', 'anaglyph'].forEach(function (k) { if (typeof data[k] === 'boolean') S[k] = data[k]; });
     if (data.layout === 'pop' || data.layout === 'box') S.layout = data.layout;
   }
   function save() { try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch (e) { /* storage unavailable */ } }
@@ -348,48 +333,66 @@ body.bare #reveal { display: block; }
     m.rotation.x = -Math.asin(d.y);
     return m;
   }
+  // The character's own materials mark every pixel it covers (stencil = 1). The black frame is drawn afterwards
+  // and skips those pixels, so the frame cuts off the room but never the character.
+  function marked(mat) {
+    mat.stencilWrite = true; mat.stencilRef = 1; mat.stencilFunc = T.AlwaysStencilFunc; mat.stencilZPass = T.ReplaceStencilOp;
+    return mat;
+  }
+  var HM = {};
+  Object.keys(M).forEach(function (k) { HM[k] = marked(M[k].clone()); });
+  var heroInk = marked(inkMat.clone());
+  function hink(mesh, k) {
+    var hull = new T.Mesh(mesh.geometry, heroInk);
+    if (Array.isArray(k)) hull.scale.set(k[0], k[1], k[2]); else hull.scale.setScalar(k || 1.06);
+    mesh.add(hull);
+    return mesh;
+  }
+  var frameMat = new T.MeshBasicMaterial({ color: 0x000000 });
+  frameMat.stencilWrite = true; frameMat.stencilRef = 1; frameMat.stencilFunc = T.NotEqualStencilFunc;
+
   function buildHero() {
     var root = new T.Group();
     var body = new T.Group(); root.add(body);
 
     [-1, 1].forEach(function (s) {
-      var leg = ink(new T.Mesh(new T.CylinderGeometry(0.034, 0.03, 0.2, 12), M.cream), [1.32, 1.0, 1.32]);
+      var leg = hink(new T.Mesh(new T.CylinderGeometry(0.034, 0.03, 0.2, 12), HM.cream), [1.32, 1.0, 1.32]);
       leg.position.set(s * 0.062, 0.16, 0); body.add(leg);
-      var shoe = ink(new T.Mesh(new T.SphereGeometry(0.056, 16, 12), M.coral), 1.14);
+      var shoe = hink(new T.Mesh(new T.SphereGeometry(0.056, 16, 12), HM.coral), 1.14);
       shoe.scale.set(1, 0.62, 1.4); shoe.position.set(s * 0.062, 0.036, 0.022); body.add(shoe);
     });
 
-    var poncho = ink(new T.Mesh(new T.CylinderGeometry(0.075, 0.2, 0.3, 28), M.coral), [1.06, 1.03, 1.06]);
+    var poncho = hink(new T.Mesh(new T.CylinderGeometry(0.075, 0.2, 0.3, 28), HM.coral), [1.06, 1.03, 1.06]);
     poncho.position.y = 0.4; body.add(poncho);
-    var hem = new T.Mesh(new T.TorusGeometry(0.198, 0.02, 8, 36), M.sun);
+    var hem = new T.Mesh(new T.TorusGeometry(0.198, 0.02, 8, 36), HM.sun);
     hem.rotation.x = Math.PI / 2; hem.position.y = 0.262; body.add(hem);
-    var collar = new T.Mesh(new T.TorusGeometry(0.078, 0.022, 8, 24), M.cream);
+    var collar = new T.Mesh(new T.TorusGeometry(0.078, 0.022, 8, 24), HM.cream);
     collar.rotation.x = Math.PI / 2; collar.position.y = 0.548; body.add(collar);
 
     var arms = [-1, 1].map(function (s) {
       var pivot = new T.Group(); pivot.position.set(s * 0.09, 0.515, 0); pivot.rotation.z = s * 0.8;
-      var arm = ink(new T.Mesh(new T.CylinderGeometry(0.03, 0.026, 0.2, 10), M.cream), [1.36, 1.0, 1.36]);
+      var arm = hink(new T.Mesh(new T.CylinderGeometry(0.03, 0.026, 0.2, 10), HM.cream), [1.36, 1.0, 1.36]);
       arm.position.y = -0.1; pivot.add(arm);
-      var hand = ink(new T.Mesh(new T.SphereGeometry(0.038, 14, 10), M.skin), 1.2);
+      var hand = hink(new T.Mesh(new T.SphereGeometry(0.038, 14, 10), HM.skin), 1.2);
       hand.position.y = -0.215; pivot.add(hand);
       body.add(pivot);
       return pivot;
     });
 
     var head = new T.Group(); head.position.y = 0.755; head.rotation.order = 'YXZ'; body.add(head);
-    var skull = ink(new T.Mesh(new T.SphereGeometry(0.2, 32, 24), M.skin), 1.05);
+    var skull = hink(new T.Mesh(new T.SphereGeometry(0.2, 32, 24), HM.skin), 1.05);
     skull.scale.set(1, 0.94, 0.96); head.add(skull);
-    var hair = ink(new T.Mesh(new T.SphereGeometry(0.213, 32, 20, 0, Math.PI * 2, 0, 1.9), M.teal), 1.05);
+    var hair = hink(new T.Mesh(new T.SphereGeometry(0.213, 32, 20, 0, Math.PI * 2, 0, 1.9), HM.teal), 1.05);
     hair.rotation.x = -0.6; hair.scale.set(1.01, 0.97, 1.0); head.add(hair);
 
     var sprout = new T.Group(); sprout.position.set(0, 0.185, -0.035); head.add(sprout);
-    var stem = new T.Mesh(new T.CylinderGeometry(0.008, 0.008, 0.08, 6), M.leaf); stem.position.y = 0.04; sprout.add(stem);
+    var stem = new T.Mesh(new T.CylinderGeometry(0.008, 0.008, 0.08, 6), HM.leaf); stem.position.y = 0.04; sprout.add(stem);
     [-1, 1].forEach(function (s) {
-      var leaf = ink(new T.Mesh(new T.SphereGeometry(0.05, 12, 8), M.leaf), 1.18);
+      var leaf = hink(new T.Mesh(new T.SphereGeometry(0.05, 12, 8), HM.leaf), 1.18);
       leaf.scale.set(1, 0.26, 0.55); leaf.position.set(s * 0.045, 0.088, 0); leaf.rotation.z = s * 0.5; sprout.add(leaf);
     });
 
-    var eyeMat = flat(0x1a1c3a), shine = flat(0xffffff);
+    var eyeMat = marked(flat(0x1a1c3a)), shine = marked(flat(0xffffff));
     var eyes = [-1, 1].map(function (s) {
       var eye = facePatch(new T.CircleGeometry(0.031, 24), eyeMat, [s * 0.37, -0.03, 0.93], 0.203);
       eye.scale.set(0.82, 1.15, 1);
@@ -397,7 +400,7 @@ body.bare #reveal { display: block; }
       head.add(eye);
       return eye;
     });
-    var blush = flat(0xff6b4a, { transparent: true, opacity: 0.42 });
+    var blush = marked(flat(0xff6b4a, { transparent: true, opacity: 0.42 }));
     [-1, 1].forEach(function (s) {
       head.add(facePatch(new T.CircleGeometry(0.024, 16), blush, [s * 0.62, -0.3, 0.72], 0.202));
     });
@@ -407,13 +410,12 @@ body.bare #reveal { display: block; }
     return { root: root, body: body, head: head, arms: arms, eyes: eyes, sprout: sprout };
   }
   var hero = buildHero();
-  // The stage carries the character, its shadow and (in the pop layout) the pedestal.
-  // It can sit in front of the glass and tilt so that it stays upright when the device leans back.
-  var stage = new T.Group(); scene.add(stage);
+  // The stage carries the character and its shadow. It renders after the room and before the black frame.
+  var stage = new T.Group(); stage.renderOrder = 5; scene.add(stage);
   stage.add(hero.root);
+  hero.root.traverse(function (o) { if (o.isGroup) o.renderOrder = 5; }); // three.js reads the order from the nearest group
   var shadow = new T.Mesh(new T.CircleGeometry(1, 32), flat(INK, { transparent: true, opacity: 0.32, depthWrite: false }));
   shadow.rotation.x = -Math.PI / 2; stage.add(shadow);
-  var pedestal = new T.Group(); stage.add(pedestal);
 
   var stars = [0, 1, 2].map(function () {
     var s = ink(new T.Mesh(new T.OctahedronGeometry(1, 0), flat(0xf2b63c)), 1.22);
@@ -422,9 +424,10 @@ body.bare #reveal { display: block; }
 
   // ---------- the box ----------
   var room = null, lamp = null, clouds = [];
+  var walk = { x: null, z: 0, i: 0, pause: 0, points: [], cx: 0, floor: 0, speed: 1 };
   var dims = { W: 1, H: 1, D: 1, hero: 1, pop: false, portal: { cx: 0, cy: 0, W: 1, H: 1 }, r: 1, zc: 0, top: 0, star: 1, lim: { x: Infinity, yUp: Infinity, yDown: Infinity } };
 
-  function quad(points, uvs, shades, map) {
+  function quad(points, uvs, shades, map, side) {
     var g = new T.BufferGeometry(), pos = [], col = [];
     points.forEach(function (p) { pos.push(p[0], p[1], p[2]); });
     shades.forEach(function (s) { col.push(s, s, s); });
@@ -432,7 +435,7 @@ body.bare #reveal { display: block; }
     g.setAttribute('uv', new T.Float32BufferAttribute([].concat.apply([], uvs), 2));
     g.setAttribute('color', new T.Float32BufferAttribute(col, 3));
     g.setIndex([0, 1, 2, 0, 2, 3]);
-    return new T.Mesh(g, new T.MeshBasicMaterial({ map: map, vertexColors: true, side: T.DoubleSide }));
+    return new T.Mesh(g, new T.MeshBasicMaterial({ map: map, vertexColors: true, side: side }));
   }
   function box(w, h, d, mat, k) { return ink(new T.Mesh(new T.BoxGeometry(w, h, d), mat), k || 1.08); }
   function disposeTree(obj) {
@@ -450,21 +453,15 @@ body.bare #reveal { display: block; }
   function buildRoom() {
     if (room) disposeTree(room);
     room = new T.Group(); scene.add(room); clouds = [];
-    pedestal.position.set(0, 0, 0); pedestal.scale.set(1, 1, 1);
-    while (pedestal.children.length) { var old = pedestal.children[0]; pedestal.remove(old); if (old.geometry) old.geometry.dispose(); }
 
     // physical screen, cm
     var SW = window.innerWidth * S.cmPerPx, SH = window.innerHeight * S.cmPerPx;
     var sLo = Math.min(SW, SH), portrait = SH >= SW, pop = S.layout === 'pop';
 
-    // 'box': the box fills the screen. 'pop': the box sits behind an opening in a black frame, and the opening is
-    // made a little smaller than the character, so the top of the head and the hands overlap the frame.
-    var W = SW, H = SH, cx = 0, cy = 0, heroPop = 0;
-    if (pop) {
-      H = 0.64 * SH; heroPop = 1.04 * H;                              // crown of the head and the sprout clear the top edge
-      W = Math.max(0.5 * SW, Math.min(0.82 * SW, 0.7 * heroPop));     // room shows on both sides; the hands come close to the side edges
-      cy = 0.02 * SH;
-    }
+    // 'box': the room fills the screen. 'pop': the room sits behind an opening in a wide black frame.
+    // The frame is the space the character's hand or head rides onto when the room is seen from the side.
+    var W = SW, H = SH, cx = 0, cy = 0;
+    if (pop) { W = 0.66 * SW; H = 0.66 * SH; cy = 0.02 * SH; }
     var inner = new T.Group(); inner.position.set(cx, cy, 0); room.add(inner);
 
     var lo = Math.min(W, H), hi = Math.max(W, H);
@@ -475,13 +472,13 @@ body.bare #reveal { display: block; }
     var nu = W / cell / 2, nv = H / cell / 2, nd = D / cell;
 
     inner.add(quad([[-x, -y, 0], [x, -y, 0], [x, -y, -D], [-x, -y, -D]],
-      [[-nu / 2, 0], [nu / 2, 0], [nu / 2, nd / 2], [-nu / 2, nd / 2]], [1, 1, 0.62, 0.62], texFloor));
+      [[-nu / 2, 0], [nu / 2, 0], [nu / 2, nd / 2], [-nu / 2, nd / 2]], [1, 1, 0.62, 0.62], texFloor, T.FrontSide));
     inner.add(quad([[-x, y, 0], [x, y, 0], [x, y, -D], [-x, y, -D]],
-      [[-nu, 0], [nu, 0], [nu, nd], [-nu, nd]], [1, 1, far, far], texCeil));
+      [[-nu, 0], [nu, 0], [nu, nd], [-nu, nd]], [1, 1, far, far], texCeil, T.BackSide));
     inner.add(quad([[-x, -y, 0], [-x, y, 0], [-x, y, -D], [-x, -y, -D]],
-      [[-nv, 0], [nv, 0], [nv, nd], [-nv, nd]], [1, 1, far, far], texWall));
+      [[-nv, 0], [nv, 0], [nv, nd], [-nv, nd]], [1, 1, far, far], texWall, T.BackSide));
     inner.add(quad([[x, -y, 0], [x, y, 0], [x, y, -D], [x, -y, -D]],
-      [[-nv, 0], [nv, 0], [nv, nd], [-nv, nd]], [1, 1, far, far], texWall));
+      [[-nv, 0], [nv, 0], [nv, nd], [-nv, nd]], [1, 1, far, far], texWall, T.FrontSide));
 
     // back wall with a round window
     var wx = -0.18 * W, wy = 0.14 * H, wr = 0.19 * lo;
@@ -539,11 +536,11 @@ body.bare #reveal { display: block; }
 
     // shelf on the left wall
     var shelf = box(2.2 * u, 0.32 * u, 3.6 * u, M.wood, 1.06);
-    shelf.position.set(-x + 1.1 * u, -0.12 * H, -0.52 * D); inner.add(shelf);
+    shelf.position.set(-x + 1.1 * u, 0.06 * H, -0.52 * D); inner.add(shelf);
     var ball = ink(new T.Mesh(new T.SphereGeometry(0.62 * u, 20, 14), M.sun), 1.12);
-    ball.position.set(-x + 1.15 * u, -0.12 * H + 0.78 * u, -0.52 * D - 0.8 * u); inner.add(ball);
+    ball.position.set(-x + 1.15 * u, 0.06 * H + 0.78 * u, -0.52 * D - 0.8 * u); inner.add(ball);
     var book = box(0.5 * u, 1.3 * u, 1.0 * u, M.coral, 1.1);
-    book.position.set(-x + 1.0 * u, -0.12 * H + 0.81 * u, -0.52 * D + 0.9 * u); book.rotation.z = 0.12; inner.add(book);
+    book.position.set(-x + 1.0 * u, 0.06 * H + 0.81 * u, -0.52 * D + 0.9 * u); book.rotation.z = 0.12; inner.add(book);
 
     // hanging lamp near the glass
     lamp = new T.Group(); lamp.position.set(0.27 * W, y, -0.2 * D); inner.add(lamp);
@@ -557,41 +554,35 @@ body.bare #reveal { display: block; }
     scene.background.set(pop ? 0x000000 : 0x0e1026);
     document.body.style.background = pop ? '#000' : '';
     if (pop) {
-      // black frame in the glass plane: hides everything behind the glass except through the opening
+      // Black frame in the glass plane. It hides everything behind the glass except through the opening,
+      // and except where the character is: seen from the side, the character's hand or head rides over the frame.
       var maskShape = new T.Shape(), bx = SW * 1.5, by = SH * 1.5;
       maskShape.moveTo(-bx, -by); maskShape.lineTo(bx, -by); maskShape.lineTo(bx, by); maskShape.lineTo(-bx, by); maskShape.lineTo(-bx, -by);
-      var opening = new T.Path(); roundedRect(opening, cx - x, cy - y, W, H, 0.04 * sLo); maskShape.holes.push(opening);
-      var maskMesh = new T.Mesh(new T.ShapeGeometry(maskShape, 12), flat(0x000000));
-      maskMesh.position.z = -0.01; room.add(maskMesh);
+      var opening = new T.Path(); roundedRect(opening, cx - x, cy - y, W, H, 0.03 * sLo); maskShape.holes.push(opening);
+      var maskMesh = new T.Mesh(new T.ShapeGeometry(maskShape, 12), frameMat);
+      maskMesh.position.z = -0.01;
+      var maskGroup = new T.Group(); maskGroup.renderOrder = 10; maskGroup.add(maskMesh); room.add(maskGroup);
 
-      // The character stands on the room's floor at the opening, its whole body just in front of the glass,
-      // so every part that reaches past the opening is drawn over the frame instead of being cut by it.
-      var leanRad = S.lean * Math.PI / 180, floorY = cy - y;
-      heroH = heroPop;
-      zc = 0.22 * heroH + S.pop * sLo;
-      top = floorY;
-      stage.position.set(0.045 * heroH, floorY, zc);                  // a little off centre: the waving hand rests over the frame
-      stage.rotation.x = leanRad;
+      // a small character inside a much larger room
+      var floorY = cy - y;
+      heroH = 0.42 * H;
+      top = floorY; pr = 0.3 * lo; zc = 0;
+      stage.rotation.x = 0;
+      shadow.position.set(0, 0.04 * u, 0);
 
-      // round mat under the feet: half inside the room, half out over the frame
-      pr = 0.42 * W;
-      var zf = 1.45 * zc, th = 0.012 * sLo, lift = 0.006 * sLo;
-      pedestal.position.set(0, 0, -zc); pedestal.scale.set(1, 1, zf / pr);
-      var base = ink(new T.Mesh(new T.CylinderGeometry(pr, pr, th, 56), M.teal), [1.03, 1.8, 1.03]);
-      base.position.y = lift - th / 2; pedestal.add(base);
-      [[0.84, 0xf6efe0, 1], [0.6, 0x2fb8a6, 2], [0.46, 0xf6efe0, 3]].forEach(function (ring) {
-        var disc = new T.Mesh(new T.CircleGeometry(pr * ring[0], 56), flat(ring[1]));
-        disc.rotation.x = -Math.PI / 2; disc.position.y = lift + ring[2] * 0.0015 * sLo; pedestal.add(disc);
-      });
-      shadow.position.set(0, lift + 0.008 * sLo, 0);
+      // spots it walks between: mostly right beside a side wall, where a hand nearly touches the wall
+      var xw = x - 0.33 * heroH;
+      walk.points = [[-xw, -0.28 * D], [0.02 * W, -0.34 * D], [xw, -0.3 * D], [0.1 * W, -0.52 * D], [-xw, -0.2 * D], [xw, -0.2 * D]];
+      walk.cx = cx; walk.floor = floorY; walk.speed = 0.55 * heroH;
+      if (walk.x === null || Math.abs(walk.x) > xw + 0.01 || walk.z > 0 || walk.z < -0.6 * D) {
+        walk.i = 0; walk.x = walk.points[0][0]; walk.z = walk.points[0][1]; walk.pause = 5;
+      }
+      stage.position.set(cx + walk.x, floorY, walk.z);
 
-      // How far the eye may move before something in front of the glass would be cut by the real screen edge.
-      // Past that the view is eased to a stop: a cut-off object is what breaks the illusion.
-      var d = S.dist, sinL = Math.sin(leanRad), cosL = Math.cos(leanRad);
-      var reach = function (edge, half, z) { return (edge * (d - z) - half * d) / z; };
-      lim.x = Math.max(2, 0.88 * Math.min(reach(SW / 2, 0.3 * heroH, zc + 0.5 * heroH * sinL), reach(SW / 2, pr, Math.max(zf * 0.5, 0.5))));
-      lim.yUp = Math.max(2, reach(SH / 2, -(floorY - th), zf));
-      lim.yDown = Math.max(2, reach(SH / 2, floorY + 1.06 * heroH * cosL, zc + 1.06 * heroH * sinL));
+      // How far the eye may move before the character, riding over the frame, would reach the real screen edge.
+      var d = S.dist, zd = 0.6 * D;
+      lim.x = Math.max(2, 0.9 * ((SW / 2) * (d + zd) - x * d) / zd);
+      lim.yUp = lim.yDown = Math.max(2, 0.9 * ((SH / 2) * (d + zd) - y * d) / zd);
     } else {
       heroH = Math.min(0.58 * H, 1.1 * W);
       stage.position.set(hx, -y, hz);
@@ -636,7 +627,7 @@ body.bare #reveal { display: block; }
     var gl = renderer.getContext();
     renderer.autoClear = false; renderer.clear();
     applyCamera(-IPD_CM / 2); gl.colorMask(true, false, false, true); renderer.render(scene, camera);
-    renderer.clearDepth();
+    renderer.clear(false, true, true);
     applyCamera(IPD_CM / 2); gl.colorMask(false, true, true, true); renderer.render(scene, camera);
     gl.colorMask(true, true, true, true); renderer.autoClear = true;
   }
@@ -740,26 +731,6 @@ body.bare #reveal { display: block; }
     }
   }
 
-  // gravity: read how far the device leans back, so the stage can stay upright in the room
-  var gravity = { on: false, lean: null };
-  function onGravity(e) {
-    var angle = (screen.orientation && typeof screen.orientation.angle === 'number') ? screen.orientation.angle : (window.orientation || 0);
-    if (e.beta === null || angle !== 0) return;         // portrait only: beta is 90 when upright and falls as the top tips away
-    var v = 90 - e.beta;
-    if (v < -15 || v > 70) return;                       // lying flat or tipped forward: keep the last value
-    v = Math.max(0, Math.min(60, v));
-    gravity.lean = gravity.lean === null ? v : gravity.lean + (v - gravity.lean) * 0.1;
-  }
-  function listenGravity() {
-    if (gravity.on || typeof window.DeviceOrientationEvent === 'undefined') return;
-    window.addEventListener('deviceorientation', onGravity); gravity.on = true;
-  }
-  async function motionPermission() {
-    if (typeof window.DeviceOrientationEvent === 'undefined') return false;
-    if (typeof window.DeviceOrientationEvent.requestPermission !== 'function') return true;
-    try { return (await window.DeviceOrientationEvent.requestPermission()) === 'granted'; } catch (e) { return false; }
-  }
-
   // device tilt
   var tilt = { base: null, got: false, on: false };
   function onTilt(e) {
@@ -788,7 +759,6 @@ body.bare #reveal { display: block; }
         setStatus('傾きセンサーが許可されませんでした。' + BLOCKED_NOTE); return false;
       }
     }
-    listenGravity();
     tilt.base = null; tilt.got = false; tilt.on = true;
     window.addEventListener('deviceorientation', onTilt);
     setStatus('端末を傾けると視点が動きます。');
@@ -809,7 +779,7 @@ body.bare #reveal { display: block; }
     switching = true;
     stopFace(); stopTilt();
     var ok = true;
-    if (next === 'face') { if (S.autoLean && await motionPermission()) listenGravity(); ok = await startFace(); }
+    if (next === 'face') ok = await startFace();
     else if (next === 'tilt') ok = await startTilt();
     mode = ok ? next : 'pointer';
     if (mode === 'pointer') { lastPointer = -1e9; if (ok) setStatus(POINTER_HINT); }
@@ -826,7 +796,7 @@ body.bare #reveal { display: block; }
   });
 
   // ---------- character behaviour ----------
-  var act = { jumpY: 0, jumpV: 0, blinkAt: 2, blink: 0, waveAt: 5, wave: 0, yaw: 0, pitch: 0 };
+  var act = { jumpY: 0, jumpV: 0, blinkAt: 2, blink: 0, waveAt: 5, wave: 0, yaw: 0, pitch: 0, bodyYaw: 0, headYaw: 0 };
   function jump() { if (act.jumpY === 0) act.jumpV = 2.3; }
   var headPos = new T.Vector3();
 
@@ -836,8 +806,24 @@ body.bare #reveal { display: block; }
       act.jumpV -= 9.5 * dt; act.jumpY += act.jumpV * dt;
       if (act.jumpY <= 0) { act.jumpY = 0; act.jumpV = 0; }
     }
+    // In the pop layout the character walks between spots, pausing at each.
+    var moving = false, dirYaw = 0;
+    if (dims.pop && walk.points.length) {
+      if (!reduceMotion) {
+        if (walk.pause > 0) walk.pause -= dt;
+        else {
+          var goal = walk.points[walk.i], wx = goal[0] - walk.x, wz = goal[1] - walk.z, wd = Math.hypot(wx, wz), step = walk.speed * dt;
+          if (wd <= step) {
+            walk.x = goal[0]; walk.z = goal[1]; walk.pause = 4 + Math.random() * 4;
+            walk.i = (walk.i + 1 + Math.floor(Math.random() * (walk.points.length - 1))) % walk.points.length;
+          } else { walk.x += wx / wd * step; walk.z += wz / wd * step; moving = true; dirYaw = Math.atan2(wx, wz); }
+        }
+      }
+      stage.position.set(walk.cx + walk.x, walk.floor, walk.z);
+      stage.updateMatrixWorld();
+    }
     var breathe = reduceMotion ? 0 : Math.sin(t * 2.1);
-    hero.root.position.y = act.jumpY * dims.hero;
+    hero.root.position.y = (act.jumpY + (moving ? Math.abs(Math.sin(t * 10)) * 0.05 : 0)) * dims.hero;
     hero.body.scale.set(1 - breathe * 0.006, 1 + breathe * 0.012, 1 - breathe * 0.006);
     var sh = 0.2 * dims.hero * (1 - Math.min(act.jumpY, 0.5) * 0.9);
     shadow.scale.set(sh, sh, 1);
@@ -848,9 +834,14 @@ body.bare #reveal { display: block; }
     var yaw = Math.max(-0.95, Math.min(0.95, Math.atan2(dx, dz)));
     var pitch = Math.max(-0.5, Math.min(0.5, Math.atan2(dy, Math.hypot(dx, dz))));
     var k = 1 - Math.exp(-dt * 7);
-    act.yaw += (yaw - act.yaw) * k; act.pitch += (pitch - act.pitch) * k;
-    hero.body.rotation.y = act.yaw * 0.35;
-    hero.head.rotation.y = act.yaw * 0.65;
+    act.yaw += (yaw - act.yaw) * k; act.pitch += ((moving ? 0 : pitch) - act.pitch) * k;
+    // walking: face the way it is going. standing: turn body and head toward the viewer.
+    var turn = (moving ? dirYaw : act.yaw * 0.35) - act.bodyYaw;
+    turn = Math.atan2(Math.sin(turn), Math.cos(turn));
+    act.bodyYaw += turn * (1 - Math.exp(-dt * 9));
+    act.headYaw += ((moving ? 0 : act.yaw * 0.65) - act.headYaw) * k;
+    hero.body.rotation.y = act.bodyYaw;
+    hero.head.rotation.y = act.headYaw;
     hero.head.rotation.x = -act.pitch;
     hero.head.rotation.z = reduceMotion ? 0 : Math.sin(t * 0.8) * 0.04;
     hero.sprout.rotation.z = reduceMotion ? 0 : Math.sin(t * 3.1) * 0.12 + act.jumpV * 0.05;
@@ -911,9 +902,6 @@ body.bare #reveal { display: block; }
 
   function frame(now) {
     var dt = Math.min((now - prev) / 1000, 0.05), t = now / 1000; prev = now;
-    if (S.autoLean && dims.pop && gravity.lean !== null && Math.abs(gravity.lean - S.lean) > 3) {
-      S.lean = Math.round(gravity.lean); needsRoom = true; syncControls();
-    }
     if (needsRoom) { buildRoom(); needsRoom = false; }
 
     if (mode === 'face') {
@@ -939,8 +927,6 @@ body.bare #reveal { display: block; }
     height: { el: $('set-height'), out: $('out-height'), get: function () { return window.innerHeight * S.cmPerPx; }, set: function (v) { S.cmPerPx = v / window.innerHeight; }, fmt: function (v) { return v.toFixed(1) + ' cm'; } },
     dist: { el: $('set-dist'), out: $('out-dist'), get: function () { return S.dist; }, set: function (v) { S.dist = v; }, fmt: function (v) { return Math.round(v) + ' cm'; } },
     depth: { el: $('set-depth'), out: $('out-depth'), get: function () { return S.depth; }, set: function (v) { S.depth = v; }, fmt: function (v) { return '×' + v.toFixed(2); } },
-    pop: { el: $('set-pop'), out: $('out-pop'), get: function () { return S.pop; }, set: function (v) { S.pop = v; }, fmt: function (v) { return (v * Math.min(window.innerWidth, window.innerHeight) * S.cmPerPx).toFixed(1) + ' cm'; } },
-    lean: { el: $('set-lean'), out: $('out-lean'), get: function () { return S.lean; }, set: function (v) { S.lean = v; }, fmt: function (v) { return Math.round(v) + '°'; } },
     gain: { el: $('set-gain'), out: $('out-gain'), get: function () { return S.gain; }, set: function (v) { S.gain = v; }, fmt: function (v) { return '×' + v.toFixed(2); } },
     fov: { el: $('set-fov'), out: $('out-fov'), get: function () { return S.fov; }, set: function (v) { S.fov = v; }, fmt: function (v) { return Math.round(v) + '°'; } }
   };
@@ -949,7 +935,7 @@ body.bare #reveal { display: block; }
       var f = fields[k], v = f.get();
       f.el.value = String(v); f.out.textContent = f.fmt(v);
     });
-    $('set-flipx').checked = S.flipX; $('set-flipy').checked = S.flipY; $('set-anaglyph').checked = S.anaglyph; $('set-autolean').checked = S.autoLean;
+    $('set-flipx').checked = S.flipX; $('set-flipy').checked = S.flipY; $('set-anaglyph').checked = S.anaglyph;
     $('layout').textContent = S.layout === 'pop' ? '見せ方：飛び出し' : '見せ方：箱';
   }
   Object.keys(fields).forEach(function (k) {
@@ -963,10 +949,6 @@ body.bare #reveal { display: block; }
   $('set-flipx').addEventListener('change', function (e) { S.flipX = e.target.checked; save(); });
   $('set-flipy').addEventListener('change', function (e) { S.flipY = e.target.checked; save(); });
   $('set-anaglyph').addEventListener('change', function (e) { S.anaglyph = e.target.checked; save(); });
-  $('set-autolean').addEventListener('change', async function (e) {
-    S.autoLean = e.target.checked; save();
-    if (S.autoLean && await motionPermission()) listenGravity();
-  });
   $('layout').addEventListener('click', function () {
     S.layout = S.layout === 'pop' ? 'box' : 'pop';
     needsRoom = true; syncControls(); save();
@@ -995,7 +977,6 @@ body.bare #reveal { display: block; }
     adopt(data);
     eye.set(0, 0, S.dist); target.copy(eye);
     resize();
-    if (S.autoLean && !(window.DeviceOrientationEvent && typeof window.DeviceOrientationEvent.requestPermission === 'function')) listenGravity();
     setMode('pointer');
     window.requestAnimationFrame(frame);
   }
