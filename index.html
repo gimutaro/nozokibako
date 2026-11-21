@@ -565,13 +565,13 @@ body.bare #reveal { display: block; }
 
       // a small character inside a much larger room
       var floorY = cy - y;
-      heroH = 0.56 * H;
+      heroH = 0.84 * H;
       top = floorY; pr = 0.3 * lo; zc = 0;
       stage.rotation.x = 0;
       shadow.position.set(0, 0.04 * u, 0);
 
       // spots it walks between: mostly right beside a side wall, where a hand nearly touches the wall
-      var xw = x - 0.33 * heroH;
+      var xw = Math.max(0, x - 0.33 * heroH);
       walk.points = [[-xw, -0.28 * D], [0.02 * W, -0.34 * D], [xw, -0.3 * D], [0.1 * W, -0.52 * D], [-xw, -0.2 * D], [xw, -0.2 * D]];
       walk.cx = cx; walk.floor = floorY; walk.speed = 0.55 * heroH;
       if (walk.x === null || Math.abs(walk.x) > xw + 0.01 || walk.z > 0 || walk.z < -0.6 * D) {
